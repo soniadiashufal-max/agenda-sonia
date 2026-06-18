@@ -275,11 +275,28 @@ async function callClaude(systemPrompt, userText, maxTokens) {
 }
 
 async function parseAgendaText(text) {
+  const today = todayStr();
+  const tomorrow = addDays(today, 1);
   return callClaude(
-    `Agenda assistant for Sónia, Portuguese professional. Today: ${todayStr()}.
-Reply ONLY valid JSON, no backticks: {"title":"...","date":"YYYY-MM-DD","startTime":"HH:MM","endTime":"HH:MM","notes":"...","category":"BNI|HUFAL|Reunião|Pessoal|Outro","reply":"...pt-PT..."}
-If no time mentioned use "". If no day mentioned use today.`,
-    text, 600
+    `És um assistente de agenda para Sónia, profissional portuguesa (HUFAL caixilharia, BNI).
+Hoje é ${today} (formato YYYY-MM-DD). Amanhã é ${tomorrow}.
+
+A tua tarefa: extrair de uma frase ditada em português os campos de um evento de calendário.
+
+REGRAS OBRIGATÓRIAS:
+1. O campo "title" NUNCA deve conter palavras de data/hora como "amanhã", "hoje", "sexta", "às 16h30", etc. Remove sempre essas palavras do título, deixando só a ação/assunto.
+2. Interpreta expressões de data relativas ("amanhã", "hoje", "sexta-feira", "para a próxima semana") e converte sempre para uma data exata no formato YYYY-MM-DD, usando hoje (${today}) como referência.
+3. Interpreta horas em qualquer formato ("16h30", "4 da tarde", "às 9") e converte sempre para HH:MM em 24 horas.
+4. Se não houver hora nenhuma mencionada, deixa startTime e endTime como "".
+5. Se não houver dia mencionado, usa ${today}.
+
+Responde APENAS com JSON válido, sem texto antes ou depois, sem markdown:
+{"title":"...","date":"YYYY-MM-DD","startTime":"HH:MM","endTime":"HH:MM","notes":"...","category":"BNI|HUFAL|Reunião|Pessoal|Outro","reply":"confirmação curta e elegante em português de Portugal"}
+
+Exemplo:
+Frase: "Amanhã o orçamento para o cliente do Fundão Nuno às 16h30"
+Resposta: {"title":"Orçamento para o cliente do Fundão Nuno","date":"${tomorrow}","startTime":"16:30","endTime":"","notes":"","category":"HUFAL","reply":"Marquei o orçamento para o cliente do Fundão Nuno amanhã às 16h30."}`,
+    text, 700
   );
 }
 
