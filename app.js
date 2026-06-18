@@ -29,6 +29,7 @@ let state = {
   taskFilter: "Todos",
   taskType: "Orçamento",
   expandedObs: null,
+  editingTask: null,
   scheduleModal: null,
   loading: false,
   taskLoading: false,
@@ -422,6 +423,7 @@ async function toggleTaskDone(id) {
 function openObs(id) {
   const task = state.tasks.find(t => t.id === id);
   state.expandedObs = id;
+  state.editingTask = null;
   render();
   setTimeout(() => {
     const el = document.getElementById("obs-textarea");
@@ -438,6 +440,36 @@ async function saveObs(id) {
   render();
   await updateTaskRow(task);
   showToast("Observação guardada");
+}
+
+function openEditTask(id) {
+  state.editingTask = id;
+  state.expandedObs = null;
+  render();
+  setTimeout(() => {
+    const el = document.getElementById("edit-title-input");
+    if (el) el.focus();
+  }, 0);
+}
+
+function cancelEditTask() {
+  state.editingTask = null;
+  render();
+}
+
+async function saveEditTask(id) {
+  const task = state.tasks.find(t => t.id === id);
+  if (!task) return;
+  const titleEl = document.getElementById("edit-title-input");
+  const typeEl = document.getElementById("edit-type-select");
+  const newTitle = titleEl ? titleEl.value.trim() : task.title;
+  if (!newTitle) { showToast("O título não pode ficar vazio"); return; }
+  task.title = newTitle;
+  task.type = typeEl ? typeEl.value : task.type;
+  state.editingTask = null;
+  render();
+  await updateTaskRow(task);
+  showToast("Tarefa atualizada");
 }
 
 async function handleDeleteTask(id) {
@@ -711,25 +743,38 @@ function renderTasksTab() {
     : filtered.map(t => {
         const typeInfo = TASK_TYPES.find(tt=>tt.value===t.type) || TASK_TYPES[4];
         const obsOpen = state.expandedObs === t.id;
+        const editOpen = state.editingTask === t.id;
         return `
         <div class="task-card ${t.done?'done':''}">
           <div class="task-main">
             <button class="task-checkbox ${t.done?'checked':''}" onclick="toggleTaskDone('${t.id}')">${t.done?'<span class="check-icon">✓</span>':''}</button>
             <div class="task-body">
-              <div class="task-title ${t.done?'done-text':''}">${esc(t.title)}</div>
-              <div class="task-meta">
+              ${editOpen ? "" : `<div class="task-title ${t.done?'done-text':''}">${esc(t.title)}</div>`}
+              ${editOpen ? "" : `<div class="task-meta">
                 <span style="color:${typeInfo.color};font-weight:500;">${typeInfo.icon} ${t.type}</span>
                 <span>· ${esc(t.createdAt)}</span>
                 ${t.obs?'<span style="color:#1f6b5c;">· 📝</span>':''}
-              </div>
+              </div>`}
             </div>
             <div class="task-actions">
-              <button class="icon-btn" onclick="${obsOpen?`render()`:`openObs('${t.id}')`}" title="Observações">📝</button>
-              <button class="icon-btn" onclick="openScheduleModal('${t.id}')" title="Agendar">📅</button>
-              <button class="icon-btn danger" onclick="handleDeleteTask('${t.id}')">×</button>
+              ${editOpen ? "" : `<button class="icon-btn" onclick="openEditTask('${t.id}')" title="Editar">✏️</button>`}
+              ${editOpen ? "" : `<button class="icon-btn" onclick="${obsOpen?`render()`:`openObs('${t.id}')`}" title="Observações">📝</button>`}
+              ${editOpen ? "" : `<button class="icon-btn" onclick="openScheduleModal('${t.id}')" title="Agendar">📅</button>`}
+              ${editOpen ? "" : `<button class="icon-btn danger" onclick="handleDeleteTask('${t.id}')">×</button>`}
             </div>
           </div>
-          ${t.obs && !obsOpen ? `<div class="task-obs-display"><div class="obs-label">Observação</div>${esc(t.obs)}</div>` : ""}
+          ${editOpen ? `
+            <div class="task-obs-area" style="flex-direction:column;align-items:stretch;gap:8px;">
+              <input class="form-input" id="edit-title-input" value="${esc(t.title)}" placeholder="Título da tarefa" onkeydown="if(event.key==='Enter'){event.preventDefault();saveEditTask('${t.id}');}">
+              <select class="form-input" id="edit-type-select">
+                ${TASK_TYPES.map(tt => `<option value="${tt.value}" ${tt.value===t.type?'selected':''}>${tt.icon} ${tt.value}</option>`).join("")}
+              </select>
+              <div style="display:flex;gap:7px;">
+                <button class="modal-cancel" style="flex:1;" onclick="cancelEditTask()">Cancelar</button>
+                <button class="obs-save-btn" style="flex:1;" onclick="saveEditTask('${t.id}')">Guardar</button>
+              </div>
+            </div>` : ""}
+          ${t.obs && !obsOpen && !editOpen ? `<div class="task-obs-display"><div class="obs-label">Observação</div>${esc(t.obs)}</div>` : ""}
           ${obsOpen ? `
             <div class="task-obs-area">
               <textarea class="obs-input" id="obs-textarea" placeholder="Notas, referências…" rows="2"></textarea>
