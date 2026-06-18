@@ -37,6 +37,13 @@ let state = {
 
 function todayStr() { return new Date().toISOString().split("T")[0]; }
 function addDays(d, n) { const dt = new Date(d + "T12:00:00"); dt.setDate(dt.getDate() + n); return dt.toISOString().split("T")[0]; }
+function formatDueLabel(dateStr) {
+  if (!dateStr) return "";
+  if (dateStr === todayStr()) return "Hoje";
+  if (dateStr === addDays(todayStr(), 1)) return "Amanhã";
+  const d = new Date(dateStr + "T12:00:00");
+  return `${d.getDate()} ${PT_MONTHS[d.getMonth()].slice(0,3)}`;
+}
 function weekStart(d) { const dt = new Date(d + "T12:00:00"); dt.setDate(dt.getDate() - dt.getDay()); return dt.toISOString().split("T")[0]; }
 function esc(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
 function showToast(msg) {
@@ -178,14 +185,14 @@ async function deleteCalendarEvent(gcalEventId) {
 // ============================================================
 // GOOGLE SHEETS API (tarefas)
 // ============================================================
-const SHEET_RANGE = "Tarefas!A2:F1000";
-const SHEET_HEADER_RANGE = "Tarefas!A1:F1";
+const SHEET_RANGE = "Tarefas!A2:H1000";
+const SHEET_HEADER_RANGE = "Tarefas!A1:H1";
 
 async function ensureSheetHeader() {
   const data = await sheetsRequest("GET", `/values/${SHEET_HEADER_RANGE}`);
   if (data && data.values && data.values.length) return;
   await sheetsRequest("PUT", `/values/${SHEET_HEADER_RANGE}?valueInputOption=RAW`, {
-    values: [["ID", "Título", "Tipo", "Concluída", "Observações", "Criada em"]],
+    values: [["ID", "Título", "Tipo", "Concluída", "Observações", "Criada em", "Data limite", "Hora limite"]],
   });
 }
 
@@ -216,6 +223,8 @@ async function loadTasksFromSheet() {
       done: row[3] === "TRUE" || row[3] === true,
       obs: row[4] || "",
       createdAt: row[5] || "",
+      dueDate: row[6] || "",
+      dueTime: row[7] || "",
       rowIndex: i + 2,
     })).reverse();
   } catch {
@@ -224,15 +233,15 @@ async function loadTasksFromSheet() {
 }
 
 async function appendTaskToSheet(task) {
-  await sheetsRequest("POST", `/values/${SHEET_RANGE.split("!")[0]}!A:F:append?valueInputOption=RAW`, {
-    values: [[task.id, task.title, task.type, task.done ? "TRUE" : "FALSE", task.obs, task.createdAt]],
+  await sheetsRequest("POST", `/values/${SHEET_RANGE.split("!")[0]}!A:H:append?valueInputOption=RAW`, {
+    values: [[task.id, task.title, task.type, task.done ? "TRUE" : "FALSE", task.obs, task.createdAt, task.dueDate || "", task.dueTime || ""]],
   });
 }
 
 async function updateTaskRow(task) {
   if (!task.rowIndex) return;
-  await sheetsRequest("PUT", `/values/Tarefas!A${task.rowIndex}:F${task.rowIndex}?valueInputOption=RAW`, {
-    values: [[task.id, task.title, task.type, task.done ? "TRUE" : "FALSE", task.obs, task.createdAt]],
+  await sheetsRequest("PUT", `/values/Tarefas!A${task.rowIndex}:H${task.rowIndex}?valueInputOption=RAW`, {
+    values: [[task.id, task.title, task.type, task.done ? "TRUE" : "FALSE", task.obs, task.createdAt, task.dueDate || "", task.dueTime || ""]],
   });
 }
 
@@ -245,8 +254,8 @@ async function deleteTaskRow(task) {
 
 async function rewriteAllTasks() {
   const ordered = [...state.tasks].reverse();
-  const values = ordered.map(t => [t.id, t.title, t.type, t.done ? "TRUE" : "FALSE", t.obs, t.createdAt]);
-  await sheetsRequest("PUT", `/values/${SHEET_RANGE}?valueInputOption=RAW`, { values: values.length ? values : [["", "", "", "", "", ""]] });
+  const values = ordered.map(t => [t.id, t.title, t.type, t.done ? "TRUE" : "FALSE", t.obs, t.createdAt, t.dueDate || "", t.dueTime || ""]);
+  await sheetsRequest("PUT", `/values/${SHEET_RANGE}?valueInputOption=RAW`, { values: values.length ? values : [["", "", "", "", "", "", "", ""]] });
   // Reatribui rowIndex
   ordered.forEach((t, i) => { t.rowIndex = i + 2; });
 }
@@ -400,7 +409,7 @@ async function handleAddTask() {
 
   const task = {
     id: "t_" + Date.now(), title, type: state.taskType, done: false, obs: "",
-    createdAt: new Date().toLocaleDateString("pt-PT"),
+    createdAt: new Date().toLocaleDateString("pt-PT"), dueDate: "", dueTime: "",
   };
   state.tasks.unshift(task);
   state.taskLoading = false;
@@ -462,10 +471,14 @@ async function saveEditTask(id) {
   if (!task) return;
   const titleEl = document.getElementById("edit-title-input");
   const typeEl = document.getElementById("edit-type-select");
+  const dateEl = document.getElementById("edit-date-input");
+  const timeEl = document.getElementById("edit-time-input");
   const newTitle = titleEl ? titleEl.value.trim() : task.title;
   if (!newTitle) { showToast("O título não pode ficar vazio"); return; }
   task.title = newTitle;
   task.type = typeEl ? typeEl.value : task.type;
+  task.dueDate = dateEl ? dateEl.value : task.dueDate;
+  task.dueTime = timeEl ? timeEl.value : task.dueTime;
   state.editingTask = null;
   render();
   await updateTaskRow(task);
@@ -754,6 +767,7 @@ function renderTasksTab() {
                 <span style="color:${typeInfo.color};font-weight:500;">${typeInfo.icon} ${t.type}</span>
                 <span>· ${esc(t.createdAt)}</span>
                 ${t.obs?'<span style="color:#1f6b5c;">· 📝</span>':''}
+                ${t.dueDate?`<span style="color:${(t.dueDate < todayStr() && !t.done) ? '#e57373' : '#c97d1a'};font-weight:500;">· ⏰ ${(t.dueDate < todayStr() && !t.done) ? 'Atrasada · ' : ''}${esc(formatDueLabel(t.dueDate))}${t.dueTime?' às '+esc(t.dueTime):''}</span>`:''}
               </div>`}
             </div>
             <div class="task-actions">
@@ -769,6 +783,10 @@ function renderTasksTab() {
               <select class="form-input" id="edit-type-select">
                 ${TASK_TYPES.map(tt => `<option value="${tt.value}" ${tt.value===t.type?'selected':''}>${tt.icon} ${tt.value}</option>`).join("")}
               </select>
+              <div class="form-grid" style="margin-bottom:0;">
+                <div class="form-field"><label class="form-label">Data limite</label><input type="date" class="form-input" id="edit-date-input" value="${t.dueDate||''}"></div>
+                <div class="form-field"><label class="form-label">Hora limite</label><input type="time" class="form-input" id="edit-time-input" value="${t.dueTime||''}"></div>
+              </div>
               <div style="display:flex;gap:7px;">
                 <button class="modal-cancel" style="flex:1;" onclick="cancelEditTask()">Cancelar</button>
                 <button class="obs-save-btn" style="flex:1;" onclick="saveEditTask('${t.id}')">Guardar</button>
