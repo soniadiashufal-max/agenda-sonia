@@ -30,6 +30,8 @@ let state = {
   taskType: "Orçamento",
   expandedObs: null,
   editingTask: null,
+  editingEvent: null,
+  syncing: false,
   scheduleModal: null,
   loading: false,
   taskLoading: false,
@@ -174,6 +176,20 @@ async function createCalendarEvent(ev) {
   return res && res.id ? res.id : null;
 }
 
+async function updateCalendarEvent(ev) {
+  if (!ev.gcalEventId) return false;
+  const body = {
+    summary: ev.title,
+    description: ev.notes || "",
+    start: ev.startTime ? { dateTime: `${ev.date}T${ev.startTime}:00`, timeZone: CONFIG.TIMEZONE } : { date: ev.date },
+    end: ev.endTime ? { dateTime: `${ev.date}T${ev.endTime}:00`, timeZone: CONFIG.TIMEZONE }
+       : ev.startTime ? { dateTime: `${ev.date}T${ev.startTime}:00`, timeZone: CONFIG.TIMEZONE }
+       : { date: ev.date },
+  };
+  const res = await gcalRequest("PATCH", `/calendars/primary/events/${ev.gcalEventId}`, body);
+  return !!(res && res.id);
+}
+
 async function deleteCalendarEvent(gcalEventId) {
   if (!gcalEventId) return;
   await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${gcalEventId}`, {
@@ -280,8 +296,17 @@ async function callClaude(systemPrompt, userText, maxTokens) {
     }),
   });
   const data = await res.json();
-  const raw = data.content?.find(b => b.type === "text")?.text || "{}";
-  return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  if (!res.ok) {
+    const msg = data?.error?.message || `Erro ${res.status} na API Anthropic`;
+    throw new Error(msg);
+  }
+  const raw = data.content?.find(b => b.type === "text")?.text || "";
+  if (!raw) throw new Error("A IA não devolveu resposta de texto.");
+  try {
+    return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  } catch {
+    throw new Error("Resposta da IA não veio em formato JSON válido: " + raw.slice(0, 120));
+  }
 }
 
 async function parseAgendaText(text) {
@@ -351,7 +376,7 @@ async function handleSendChat() {
       state.messages.push({ role: "ai", text: "Não consegui sincronizar com o Google Calendar agora." });
     }
   } catch (e) {
-    state.messages.push({ role: "ai", text: "Não consegui interpretar. Reformula ou usa o formulário?" });
+    state.messages.push({ role: "ai", text: `Não consegui interpretar (${e.message || "erro desconhecido"}). Reformula ou usa o formulário?` });
   }
   state.loading = false;
   render();
@@ -386,6 +411,44 @@ async function handleDeleteEvent(id) {
   state.events = state.events.filter(e => e.id !== id);
   render();
   if (ev.gcalEventId) await deleteCalendarEvent(ev.gcalEventId);
+}
+
+function openEditEvent(id) {
+  state.editingEvent = id;
+  render();
+  setTimeout(() => {
+    const el = document.getElementById("evedit-title-input");
+    if (el) el.focus();
+  }, 0);
+}
+
+function cancelEditEvent() {
+  state.editingEvent = null;
+  render();
+}
+
+async function saveEditEvent(id) {
+  const ev = state.events.find(e => e.id === id);
+  if (!ev) return;
+  const title = document.getElementById("evedit-title-input")?.value.trim();
+  if (!title) { showToast("O título não pode ficar vazio"); return; }
+  ev.title = title;
+  ev.date = document.getElementById("evedit-date-input")?.value || ev.date;
+  ev.startTime = document.getElementById("evedit-start-input")?.value || "";
+  ev.endTime = document.getElementById("evedit-end-input")?.value || "";
+  ev.notes = document.getElementById("evedit-notes-input")?.value || "";
+  ev.category = document.getElementById("evedit-category-select")?.value || ev.category;
+  state.editingEvent = null;
+  state.selectedDate = ev.date; state.viewAnchor = ev.date;
+  render();
+
+  if (ev.gcalEventId) {
+    const ok = await updateCalendarEvent(ev);
+    showToast(ok ? "Evento atualizado no Google Calendar" : "Atualizado localmente, falhou sincronizar");
+  } else {
+    showToast("Evento atualizado");
+  }
+  render();
 }
 
 // ============================================================
@@ -528,6 +591,21 @@ function eventsForDate(d) {
 // ============================================================
 // NAVIGATION
 // ============================================================
+async function handleManualSync() {
+  if (state.syncing) return;
+  state.syncing = true;
+  render();
+  try {
+    await loadEventsFromCalendar();
+    await loadTasksFromSheet();
+    showToast("Agenda e tarefas atualizadas");
+  } catch {
+    showToast("Não foi possível sincronizar agora");
+  }
+  state.syncing = false;
+  render();
+}
+
 function switchTab(tab) { state.activeTab = tab; render(); }
 function setCalView(v) { state.calView = v; render(); }
 function setMode(m) { state.mode = m; render(); }
@@ -554,8 +632,11 @@ function render() {
 }
 
 function renderViewPills() {
-  return `<div class="view-pills">
-    ${["mensal","semanal","diária"].map(v => `<button class="view-pill ${state.calView===v?'active':''}" onclick="setCalView('${v}')">${v[0].toUpperCase()+v.slice(1)}</button>`).join("")}
+  return `<div style="display:flex;align-items:center;gap:8px;">
+    <div class="view-pills">
+      ${["mensal","semanal","diária"].map(v => `<button class="view-pill ${state.calView===v?'active':''}" onclick="setCalView('${v}')">${v[0].toUpperCase()+v.slice(1)}</button>`).join("")}
+    </div>
+    <button class="nav-btn" onclick="handleManualSync()" title="Sincronizar com o Google Calendar" ${state.syncing?'disabled':''}>${state.syncing?'⏳':'🔄'}</button>
   </div>`;
 }
 
@@ -649,18 +730,22 @@ function renderDaily() {
   const allDay = dayEvs.filter(e => !e.startTime);
   const hours = Array.from({length:14}, (_,i) => i + 7);
 
-  const alldayHtml = allDay.length ? `<div class="day-allday"><div class="allday-label">Dia inteiro</div>${allDay.map(e=>`<div class="allday-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'}">${esc(e.title)}</div>`).join("")}</div>` : "";
+  const alldayHtml = allDay.length ? `<div class="day-allday"><div class="allday-label">Dia inteiro</div>${allDay.map(e=>`<div class="allday-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="openEditEvent('${e.id}')">${esc(e.title)}</div>`).join("")}</div>` : "";
 
   const hoursHtml = hours.map(h => {
     const hStr = String(h).padStart(2,"0") + ":";
     const hEvs = withTime.filter(e => e.startTime.startsWith(String(h).padStart(2,"0")));
     return `<div class="hour-row">
       <div class="hour-label">${hStr}</div>
-      <div class="hour-line">${hEvs.map(e=>`<div class="hour-event" style="background:${TEAL_HEX[e.category]||'#6b7280'}">${esc(e.startTime)}${e.endTime?' — '+esc(e.endTime):''} · ${esc(e.title)}</div>`).join("")}</div>
+      <div class="hour-line">${hEvs.map(e=>`<div class="hour-event" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="openEditEvent('${e.id}')">${esc(e.startTime)}${e.endTime?' — '+esc(e.endTime):''} · ${esc(e.title)}</div>`).join("")}</div>
     </div>`;
   }).join("");
 
   const emptyHtml = dayEvs.length === 0 ? `<div class="empty-day"><div style="font-size:24px;margin-bottom:6px;">📅</div>Nenhum evento para este dia.<br>Adiciona abaixo.</div>` : "";
+
+  const editableListHtml = dayEvs.length ? `
+    <div style="font-family:'Playfair Display',serif;font-size:13.5px;margin:14px 0 8px;">Toca num evento para editar ou apagar</div>
+    ${dayEvs.map(e => renderEventCard(e)).join("")}` : "";
 
   return `
     <div class="view-switch">
@@ -672,7 +757,8 @@ function renderDaily() {
       ${renderViewPills()}
     </div>
     <div class="day-panel">${alldayHtml}<div class="day-timeline">${hoursHtml}</div></div>
-    ${emptyHtml}`;
+    ${emptyHtml}
+    ${editableListHtml}`;
 }
 
 function renderAddSection() {
@@ -726,22 +812,53 @@ function renderEventsListForSelected() {
   const d = new Date(state.selectedDate + "T12:00:00");
   return `
     <div style="font-family:'Playfair Display',serif;font-size:13.5px;margin-bottom:8px;">${PT_DAYS_LONG[d.getDay()]}, ${d.getDate()} ${PT_MONTHS[d.getMonth()]} · ${evs.length} evento${evs.length!==1?'s':''}</div>
-    ${evs.map(e => `
+    ${evs.map(e => renderEventCard(e)).join("")}
+  `;
+}
+
+function renderEventCard(e) {
+  const editOpen = state.editingEvent === e.id;
+  if (editOpen) {
+    return `
       <div class="task-card" style="border-left:3px solid ${TEAL_HEX[e.category]||'#6b7280'};margin-bottom:7px;">
-        <div class="task-main">
-          <div style="font-size:11px;font-weight:600;color:#1f6b5c;min-width:36px;">${esc(e.startTime||'–')}</div>
-          <div class="task-body">
-            <div class="task-title">${esc(e.title)}</div>
-            ${e.notes?`<div class="task-meta">${esc(e.notes)}</div>`:""}
-            <div class="task-meta">
-              ${e.gcal?'<span style="color:#3b6fd4;">● Google Calendar</span>':''}
-              ${e.pending?'<span style="color:#c97d1a;">A sincronizar…</span>':''}
+        <div class="task-obs-area" style="flex-direction:column;align-items:stretch;gap:8px;border-top:none;">
+          <input class="form-input" id="evedit-title-input" value="${esc(e.title)}" placeholder="Título do evento">
+          <div class="form-grid" style="margin-bottom:0;">
+            <div class="form-field full"><label class="form-label">Data</label><input type="date" class="form-input" id="evedit-date-input" value="${e.date}"></div>
+            <div class="form-field"><label class="form-label">Início</label><input type="time" class="form-input" id="evedit-start-input" value="${e.startTime||''}"></div>
+            <div class="form-field"><label class="form-label">Fim</label><input type="time" class="form-input" id="evedit-end-input" value="${e.endTime||''}"></div>
+            <div class="form-field full"><label class="form-label">Categoria</label>
+              <select class="form-input" id="evedit-category-select">
+                ${Object.keys(TEAL_HEX).map(k=>`<option value="${k}" ${k===e.category?'selected':''}>${k}</option>`).join("")}
+              </select>
             </div>
+            <div class="form-field full"><label class="form-label">Notas / Local</label><input class="form-input" id="evedit-notes-input" value="${esc(e.notes||'')}"></div>
           </div>
+          <div style="display:flex;gap:7px;">
+            <button class="modal-cancel" style="flex:1;" onclick="cancelEditEvent()">Cancelar</button>
+            <button class="obs-save-btn" style="flex:1;" onclick="saveEditEvent('${e.id}')">Guardar</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="task-card" style="border-left:3px solid ${TEAL_HEX[e.category]||'#6b7280'};margin-bottom:7px;">
+      <div class="task-main">
+        <div style="font-size:11px;font-weight:600;color:#1f6b5c;min-width:36px;">${esc(e.startTime||'–')}</div>
+        <div class="task-body">
+          <div class="task-title">${esc(e.title)}</div>
+          ${e.notes?`<div class="task-meta">${esc(e.notes)}</div>`:""}
+          <div class="task-meta">
+            ${e.gcal?'<span style="color:#3b6fd4;">● Google Calendar</span>':''}
+            ${e.pending?'<span style="color:#c97d1a;">A sincronizar…</span>':''}
+          </div>
+        </div>
+        <div class="task-actions">
+          <button class="icon-btn" onclick="openEditEvent('${e.id}')" title="Editar">✏️</button>
           <button class="icon-btn danger" onclick="handleDeleteEvent('${e.id}')">×</button>
         </div>
-      </div>`).join("")}
-  `;
+      </div>
+    </div>`;
 }
 
 function renderTasksTab() {
@@ -802,6 +919,9 @@ function renderTasksTab() {
       }).join("");
 
   return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+      <button class="nav-btn" onclick="handleManualSync()" title="Sincronizar com o Google Sheet" ${state.syncing?'disabled':''}>${state.syncing?'⏳ A sincronizar…':'🔄 Sincronizar'}</button>
+    </div>
     <div class="task-stats">
       <div class="stat-box"><div class="stat-num">${total}</div><div class="stat-label">Total</div></div>
       <div class="stat-box"><div class="stat-num" style="color:#e57373;">${pending}</div><div class="stat-label">Pendentes</div></div>
