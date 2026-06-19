@@ -1,4 +1,4 @@
-const CACHE_NAME = "agenda-sonia-v1";
+const CACHE_NAME = "agenda-sonia-v2";
 const SHELL_FILES = ["./index.html", "./app.js", "./config.js", "./manifest.json"];
 
 self.addEventListener("install", (event) => {
@@ -17,13 +17,22 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Network-first para chamadas de API, cache-first para o resto (shell)
+// Network-first para TUDO (shell incluído): tenta sempre buscar a versão mais
+// recente do servidor primeiro. Só usa a cópia em cache se não houver rede
+// (modo offline). Isto garante que atualizações ao app.js/index.html ficam
+// visíveis assim que a pessoa reabre a app, sem precisar de limpar cache.
 self.addEventListener("fetch", (event) => {
   const url = event.request.url;
   const isApi = url.includes("googleapis.com") || url.includes("anthropic.com") || url.includes("accounts.google.com");
-  if (isApi) return; // nunca cachear chamadas de API
+  if (isApi) return; // nunca intercetar chamadas de API
 
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((res) => {
+        const resClone = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, resClone));
+        return res;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

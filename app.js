@@ -22,6 +22,7 @@ let state = {
   accessToken: null,
   activeTab: "agenda",
   calView: "semanal",
+  hufalCalView: "semanal",
   mode: "chat",
   messages: [{ role: "ai", text: "Olá, Sónia! Dita o que precisas de fazer com hora e dia." }],
   events: [],          // { id, title, date, startTime, endTime, notes, category, gcalEventId }
@@ -679,8 +680,9 @@ async function confirmScheduleTask() {
   render();
 }
 
-function eventsForDate(d) {
-  return state.events.filter(e => e.date === d).sort((a, b) => (a.startTime || "99").localeCompare(b.startTime || "99"));
+function eventsForDate(d, list) {
+  const source = list || state.events;
+  return source.filter(e => e.date === d).sort((a, b) => (a.startTime || "99").localeCompare(b.startTime || "99"));
 }
 
 // ============================================================
@@ -703,12 +705,12 @@ async function handleManualSync() {
 }
 
 function switchTab(tab) { state.activeTab = tab; render(); }
-function setCalView(v) { state.calView = v; render(); }
+function setCalView(scope, v) { if (scope === "hufal") state.hufalCalView = v; else state.calView = v; render(); }
 function setMode(m) { state.mode = m; render(); }
 function navMonth(dir) { const d = new Date(state.viewAnchor + "T12:00:00"); d.setDate(1); d.setMonth(d.getMonth() + dir); state.viewAnchor = d.toISOString().split("T")[0]; render(); }
 function navWeek(dir) { state.viewAnchor = addDays(state.viewAnchor, dir * 7); render(); }
 function navDay(dir) { const nd = addDays(state.selectedDate, dir); state.selectedDate = nd; state.viewAnchor = nd; render(); }
-function selectDay(d) { state.selectedDate = d; state.calView = "diária"; render(); }
+function selectDay(d, scope) { state.selectedDate = d; if (scope === "hufal") state.hufalCalView = "diária"; else state.calView = "diária"; render(); }
 function setTaskFilter(f) { state.taskFilter = f; render(); }
 function setTaskType(t) { state.taskType = t; render(); }
 
@@ -728,10 +730,12 @@ function render() {
   renderModal();
 }
 
-function renderViewPills() {
+function renderViewPills(scope) {
+  const cv = scope === "hufal" ? state.hufalCalView : state.calView;
+  const accent = scope === "hufal" ? "var(--tab-hufal)" : "var(--tab-agenda)";
   return `<div style="display:flex;align-items:center;gap:8px;">
     <div class="view-pills">
-      ${["mensal","semanal","diária"].map(v => `<button class="view-pill ${state.calView===v?'active':''}" onclick="setCalView('${v}')">${v[0].toUpperCase()+v.slice(1)}</button>`).join("")}
+      ${["mensal","semanal","diária"].map(v => `<button class="view-pill ${cv===v?'active':''}" style="${cv===v?`background:${accent};`:''}" onclick="setCalView('${scope}','${v}')">${v[0].toUpperCase()+v.slice(1)}</button>`).join("")}
     </div>
     <button class="nav-btn" onclick="handleManualSync()" title="Sincronizar com o Google Calendar" ${state.syncing?'disabled':''}>${state.syncing?'⏳':'🔄'}</button>
   </div>`;
@@ -739,13 +743,15 @@ function renderViewPills() {
 
 function renderAgendaTab() {
   let body = "";
-  if (state.calView === "mensal") body = renderMonthly();
-  else if (state.calView === "semanal") body = renderWeekly();
-  else body = renderDaily();
+  if (state.calView === "mensal") body = renderMonthly("agenda", state.events);
+  else if (state.calView === "semanal") body = renderWeekly("agenda", state.events);
+  else body = renderDaily("agenda", state.events);
   return body + renderAddSection();
 }
 
-function renderMonthly() {
+function renderMonthly(scope, eventsList) {
+  scope = scope || "agenda";
+  const cv = scope === "hufal" ? state.hufalCalView : state.calView;
   const anchor = new Date(state.viewAnchor + "T12:00:00");
   const year = anchor.getFullYear(), month = anchor.getMonth();
   const firstDay = new Date(year, month, 1).getDay();
@@ -756,10 +762,10 @@ function renderMonthly() {
   while (cells.length % 7 !== 0) { const d = new Date(year, month + 1, cells.length - firstDay - daysInMonth + 1); cells.push({ date: d.toISOString().split("T")[0], other: true, n: d.getDate() }); }
 
   const cellsHtml = cells.map(c => {
-    const evs = eventsForDate(c.date);
+    const evs = eventsForDate(c.date, eventsList);
     const isToday = c.date === todayStr();
     const isSel = c.date === state.selectedDate;
-    return `<div class="cal-cell ${c.other?'other-month':''} ${isToday?'is-today':''} ${isSel&&!isToday?'selected':''}" onclick="selectDay('${c.date}')">
+    return `<div class="cal-cell ${c.other?'other-month':''} ${isToday?'is-today':''} ${isSel&&!isToday?'selected':''}" onclick="selectDay('${c.date}','${scope}')">
       <div class="cal-day">${c.n}</div>
       ${evs.slice(0,2).map(e => `<div class="cal-ev-pill" style="background:${TEAL_HEX[e.category]||'#6b7280'}">${e.startTime?esc(e.startTime)+' ':''}${esc(e.title)}</div>`).join("")}
       ${evs.length>2?`<div style="font-size:9px;color:#6b7280;">+${evs.length-2} mais</div>`:""}
@@ -773,7 +779,7 @@ function renderMonthly() {
         <span class="nav-label">${PT_MONTHS[month]} ${year}</span>
         <button class="nav-btn" onclick="navMonth(1)">›</button>
       </div>
-      ${renderViewPills()}
+      ${renderViewPills(scope)}
     </div>
     <div class="cal-grid">
       <div class="cal-head">${PT_DAYS_SHORT.map(d=>`<div class="cal-head-cell">${d}</div>`).join("")}</div>
@@ -781,7 +787,8 @@ function renderMonthly() {
     </div>`;
 }
 
-function renderWeekly() {
+function renderWeekly(scope, eventsList) {
+  scope = scope || "agenda";
   const ws = weekStart(state.viewAnchor);
   const days = Array.from({length:7}, (_,i) => addDays(ws, i));
   const wsDate = new Date(ws + "T12:00:00");
@@ -791,14 +798,14 @@ function renderWeekly() {
   const headHtml = days.map(d => {
     const dd = new Date(d + "T12:00:00");
     const isT = d === todayStr();
-    return `<div class="week-head-cell ${isT?'is-today':''}" onclick="selectDay('${d}')">
+    return `<div class="week-head-cell ${isT?'is-today':''}" onclick="selectDay('${d}','${scope}')">
       <div class="week-day-name">${PT_DAYS_SHORT[dd.getDay()]}</div>
       <div class="week-day-num">${dd.getDate()}</div>
     </div>`;
   }).join("");
 
   // Eventos da semana, separados em "com hora" e "dia inteiro"
-  const weekEvsByDay = days.map(d => eventsForDate(d));
+  const weekEvsByDay = days.map(d => eventsForDate(d, eventsList));
   const allDayByDay = weekEvsByDay.map(evs => evs.filter(e => !e.startTime));
   const timedByDay = weekEvsByDay.map(evs => evs.filter(e => e.startTime));
 
@@ -829,7 +836,7 @@ function renderWeekly() {
       <div class="week-hour-label">${hStr}</div>
       ${days.map((d,i) => {
         const hEvs = timedByDay[i].filter(e => parseInt(e.startTime.slice(0,2),10) === h);
-        return `<div class="week-hour-col" onclick="selectDay('${d}')">
+        return `<div class="week-hour-col" onclick="selectDay('${d}','${scope}')">
           ${hEvs.map(e=>`<div class="week-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="event.stopPropagation();openEditEvent('${e.id}')">${esc(e.startTime)}${e.endTime?'–'+esc(e.endTime):''}<br>${esc(e.title)}</div>`).join("")}
         </div>`;
       }).join("")}
@@ -843,7 +850,7 @@ function renderWeekly() {
         <span class="nav-label" style="font-size:12px;">${label}</span>
         <button class="nav-btn" onclick="navWeek(1)">›</button>
       </div>
-      ${renderViewPills()}
+      ${renderViewPills(scope)}
     </div>
     <div class="week-grid">
       <div class="week-head" style="grid-template-columns:34px repeat(7,1fr);">
@@ -855,9 +862,11 @@ function renderWeekly() {
     </div>`;
 }
 
-function renderDaily() {
+function renderDaily(scope, eventsList) {
+  scope = scope || "agenda";
+  const cardRenderer = scope === "hufal" ? renderWorkCard : renderEventCard;
   const d = new Date(state.selectedDate + "T12:00:00");
-  const dayEvs = eventsForDate(state.selectedDate);
+  const dayEvs = eventsForDate(state.selectedDate, eventsList);
   const withTime = dayEvs.filter(e => e.startTime);
   const allDay = dayEvs.filter(e => !e.startTime);
   const hours = Array.from({length:14}, (_,i) => i + 7);
@@ -873,11 +882,11 @@ function renderDaily() {
     </div>`;
   }).join("");
 
-  const emptyHtml = dayEvs.length === 0 ? `<div class="empty-day"><div style="font-size:24px;margin-bottom:6px;">📅</div>Nenhum evento para este dia.<br>Adiciona abaixo.</div>` : "";
+  const emptyHtml = dayEvs.length === 0 ? `<div class="empty-day"><div style="font-size:24px;margin-bottom:6px;">📅</div>Nenhum evento para este dia.${scope==='agenda'?'<br>Adiciona abaixo.':''}</div>` : "";
 
   const editableListHtml = dayEvs.length ? `
-    <div style="font-family:'Playfair Display',serif;font-size:13.5px;margin:14px 0 8px;">Toca num evento para editar ou apagar</div>
-    ${dayEvs.map(e => renderEventCard(e)).join("")}` : "";
+    <div style="font-family:'Playfair Display',serif;font-size:13.5px;margin:14px 0 8px;">Toca num evento para editar${scope==='hufal'?' os dados da obra':' ou apagar'}</div>
+    ${dayEvs.map(e => cardRenderer(e)).join("")}` : "";
 
   return `
     <div class="view-switch">
@@ -886,7 +895,7 @@ function renderDaily() {
         <span class="nav-label" style="font-size:12px;">${state.selectedDate===todayStr()?"Hoje · ":""}${PT_DAYS_LONG[d.getDay()]}, ${d.getDate()} ${PT_MONTHS[d.getMonth()]}</span>
         <button class="nav-btn" onclick="navDay(1)">›</button>
       </div>
-      ${renderViewPills()}
+      ${renderViewPills(scope)}
     </div>
     <div class="day-panel">${alldayHtml}<div class="day-timeline">${hoursHtml}</div></div>
     ${emptyHtml}
@@ -934,18 +943,21 @@ function renderAddSection() {
         </div>
       `}
     </div>
-    ${renderEventsListForSelected()}
+    ${renderListForSelected("agenda", state.events)}
   `;
 }
 
-function renderEventsListForSelected() {
-  if (state.calView === "diária") return ""; // já mostrado na timeline
-  const evs = eventsForDate(state.selectedDate);
+function renderListForSelected(scope, eventsList) {
+  const cv = scope === "hufal" ? state.hufalCalView : state.calView;
+  if (cv === "diária") return ""; // já mostrado na timeline
+  const evs = eventsForDate(state.selectedDate, eventsList);
   if (!evs.length) return "";
   const d = new Date(state.selectedDate + "T12:00:00");
+  const cardRenderer = scope === "hufal" ? renderWorkCard : renderEventCard;
+  const noun = scope === "hufal" ? "obra" : "evento";
   return `
-    <div style="font-family:'Playfair Display',serif;font-size:13.5px;margin-bottom:8px;">${PT_DAYS_LONG[d.getDay()]}, ${d.getDate()} ${PT_MONTHS[d.getMonth()]} · ${evs.length} evento${evs.length!==1?'s':''}</div>
-    ${evs.map(e => renderEventCard(e)).join("")}
+    <div style="font-family:'Playfair Display',serif;font-size:13.5px;margin-bottom:8px;">${PT_DAYS_LONG[d.getDay()]}, ${d.getDate()} ${PT_MONTHS[d.getMonth()]} · ${evs.length} ${noun}${evs.length!==1?'s':''}</div>
+    ${evs.map(e => cardRenderer(e)).join("")}
   `;
 }
 
@@ -1111,84 +1123,81 @@ async function saveHufalWork(eventId) {
   showToast("Dados da obra guardados");
 }
 
-function renderHufalTab() {
-  const workEvents = state.events
-    .filter(isHufalWorkEvent)
-    .sort((a, b) => (a.date + (a.startTime||"99:99")).localeCompare(b.date + (b.startTime||"99:99")));
+function renderWorkCard(ev) {
+  const work = state.works[ev.gcalEventId] || {};
+  const editOpen = state.hufalEditingWork === ev.gcalEventId;
+  const d = new Date(ev.date + "T12:00:00");
+  const dateLabel = `${PT_DAYS_SHORT[d.getDay()]}, ${d.getDate()} ${PT_MONTHS[d.getMonth()].slice(0,3)}`;
 
+  if (editOpen) {
+    return `
+      <div class="task-card" style="border-left:3px solid var(--tab-hufal);margin-bottom:8px;">
+        <div class="task-main" style="padding-bottom:0;">
+          <div class="task-body">
+            <div class="task-title">${esc(ev.title)}</div>
+            <div class="task-meta">${dateLabel}${ev.startTime?' · '+esc(ev.startTime):''}</div>
+          </div>
+        </div>
+        <div class="task-obs-area" style="flex-direction:column;align-items:stretch;gap:8px;">
+          <div class="form-grid" style="margin-bottom:0;">
+            <div class="form-field full"><label class="form-label">Cliente</label><input class="form-input" id="hufal-client-input" value="${esc(work.client||'')}" placeholder="Nome do cliente"></div>
+            <div class="form-field full"><label class="form-label">Morada</label><input class="form-input" id="hufal-address-input" value="${esc(work.address||'')}" placeholder="Morada da obra"></div>
+            <div class="form-field full"><label class="form-label">Tipo de trabalho</label>
+              <select class="form-input" id="hufal-type-select">
+                <option value="">— Selecionar —</option>
+                ${WORK_TYPES.map(w => `<option value="${w}" ${w===work.workType?'selected':''}>${w}</option>`).join("")}
+              </select>
+            </div>
+            <div class="form-field full"><label class="form-label">Equipa / Responsável</label><input class="form-input" id="hufal-team-input" value="${esc(work.team||'')}" placeholder="Ex: Hugo, equipa externa…"></div>
+            <div class="form-field full"><label class="form-label">Notas técnicas</label><input class="form-input" id="hufal-technotes-input" value="${esc(work.techNotes||'')}" placeholder="Medidas, materiais, observações…"></div>
+          </div>
+          <div style="display:flex;gap:7px;">
+            <button class="modal-cancel" style="flex:1;" onclick="cancelHufalEdit()">Cancelar</button>
+            <button class="obs-save-btn" style="flex:1;background:var(--tab-hufal);" onclick="saveHufalWork('${ev.gcalEventId}')">Guardar</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  const hasWork = work.client || work.address || work.workType || work.team || work.techNotes;
+  return `
+    <div class="task-card" style="border-left:3px solid var(--tab-hufal);margin-bottom:8px;">
+      <div class="task-main">
+        <div style="font-size:11px;font-weight:600;color:var(--tab-hufal);min-width:62px;">${dateLabel}${ev.startTime?'<br>'+esc(ev.startTime):''}</div>
+        <div class="task-body">
+          <div class="task-title">${esc(ev.title)}</div>
+          ${work.workType?`<div class="task-meta"><span style="color:var(--tab-hufal);font-weight:500;">🔧 ${esc(work.workType)}</span></div>`:""}
+          ${work.client?`<div class="task-meta">👤 ${esc(work.client)}</div>`:""}
+          ${work.address?`<div class="task-meta"><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(work.address)}" target="_blank" rel="noopener" style="color:#3b6fd4;text-decoration:none;" onclick="event.stopPropagation()">📍 ${esc(work.address)}</a></div>`:""}
+          ${work.team?`<div class="task-meta">🧑‍🔧 ${esc(work.team)}</div>`:""}
+          ${!hasWork?`<div class="task-meta" style="color:#c97d1a;">Sem dados de obra preenchidos</div>`:""}
+        </div>
+        <button class="icon-btn" onclick="openHufalEdit('${ev.gcalEventId}')" title="Editar dados da obra">✏️</button>
+      </div>
+    </div>`;
+}
+
+function renderHufalTab() {
+  const workEvents = state.events.filter(isHufalWorkEvent);
   const upcoming = workEvents.filter(e => e.date >= todayStr());
   const past = workEvents.filter(e => e.date < todayStr());
 
-  const renderWorkCard = (ev) => {
-    const work = state.works[ev.gcalEventId] || {};
-    const editOpen = state.hufalEditingWork === ev.gcalEventId;
-    const d = new Date(ev.date + "T12:00:00");
-    const dateLabel = `${PT_DAYS_SHORT[d.getDay()]}, ${d.getDate()} ${PT_MONTHS[d.getMonth()].slice(0,3)}`;
-
-    if (editOpen) {
-      return `
-        <div class="task-card" style="border-left:3px solid var(--teal-dark);margin-bottom:8px;">
-          <div class="task-main" style="padding-bottom:0;">
-            <div class="task-body">
-              <div class="task-title">${esc(ev.title)}</div>
-              <div class="task-meta">${dateLabel}${ev.startTime?' · '+esc(ev.startTime):''}</div>
-            </div>
-          </div>
-          <div class="task-obs-area" style="flex-direction:column;align-items:stretch;gap:8px;">
-            <div class="form-grid" style="margin-bottom:0;">
-              <div class="form-field full"><label class="form-label">Cliente</label><input class="form-input" id="hufal-client-input" value="${esc(work.client||'')}" placeholder="Nome do cliente"></div>
-              <div class="form-field full"><label class="form-label">Morada</label><input class="form-input" id="hufal-address-input" value="${esc(work.address||'')}" placeholder="Morada da obra"></div>
-              <div class="form-field full"><label class="form-label">Tipo de trabalho</label>
-                <select class="form-input" id="hufal-type-select">
-                  <option value="">— Selecionar —</option>
-                  ${WORK_TYPES.map(w => `<option value="${w}" ${w===work.workType?'selected':''}>${w}</option>`).join("")}
-                </select>
-              </div>
-              <div class="form-field full"><label class="form-label">Equipa / Responsável</label><input class="form-input" id="hufal-team-input" value="${esc(work.team||'')}" placeholder="Ex: Hugo, equipa externa…"></div>
-              <div class="form-field full"><label class="form-label">Notas técnicas</label><input class="form-input" id="hufal-technotes-input" value="${esc(work.techNotes||'')}" placeholder="Medidas, materiais, observações…"></div>
-            </div>
-            <div style="display:flex;gap:7px;">
-              <button class="modal-cancel" style="flex:1;" onclick="cancelHufalEdit()">Cancelar</button>
-              <button class="obs-save-btn" style="flex:1;" onclick="saveHufalWork('${ev.gcalEventId}')">Guardar</button>
-            </div>
-          </div>
-        </div>`;
-    }
-
-    const hasWork = work.client || work.address || work.workType || work.team || work.techNotes;
-    return `
-      <div class="task-card" style="border-left:3px solid var(--teal-dark);margin-bottom:8px;">
-        <div class="task-main">
-          <div style="font-size:11px;font-weight:600;color:var(--teal-dark);min-width:62px;">${dateLabel}${ev.startTime?'<br>'+esc(ev.startTime):''}</div>
-          <div class="task-body">
-            <div class="task-title">${esc(ev.title)}</div>
-            ${work.workType?`<div class="task-meta"><span style="color:var(--teal-dark);font-weight:500;">🔧 ${esc(work.workType)}</span></div>`:""}
-            ${work.client?`<div class="task-meta">👤 ${esc(work.client)}</div>`:""}
-            ${work.address?`<div class="task-meta"><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(work.address)}" target="_blank" rel="noopener" style="color:#3b6fd4;text-decoration:none;">📍 ${esc(work.address)}</a></div>`:""}
-            ${work.team?`<div class="task-meta">🧑‍🔧 ${esc(work.team)}</div>`:""}
-            ${!hasWork?`<div class="task-meta" style="color:#c97d1a;">Sem dados de obra preenchidos</div>`:""}
-          </div>
-          <button class="icon-btn" onclick="openHufalEdit('${ev.gcalEventId}')" title="Editar dados da obra">✏️</button>
-        </div>
-      </div>`;
-  };
+  let body = "";
+  if (state.hufalCalView === "mensal") body = renderMonthly("hufal", workEvents);
+  else if (state.hufalCalView === "semanal") body = renderWeekly("hufal", workEvents);
+  else body = renderDaily("hufal", workEvents);
 
   return `
-    <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
-      <button class="nav-btn" onclick="handleManualSync()" title="Sincronizar" ${state.syncing?'disabled':''}>${state.syncing?'⏳ A sincronizar…':'🔄 Sincronizar'}</button>
-    </div>
     <div class="task-stats">
-      <div class="stat-box"><div class="stat-num">${workEvents.length}</div><div class="stat-label">Total</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:var(--tab-hufal);">${workEvents.length}</div><div class="stat-label">Total</div></div>
       <div class="stat-box"><div class="stat-num" style="color:#3b6fd4;">${upcoming.length}</div><div class="stat-label">Por vir</div></div>
       <div class="stat-box"><div class="stat-num" style="color:var(--gray);">${past.length}</div><div class="stat-label">Concluídas</div></div>
     </div>
     <div style="font-size:11.5px;color:var(--gray);margin-bottom:12px;">Mostra eventos da Agenda marcados como HUFAL ou com palavras como "instalação", "retificação", "medição", "assistência".</div>
     ${workEvents.length === 0
       ? `<div class="empty-state"><div style="font-size:26px;margin-bottom:6px;">🔧</div>Sem instalações ou obras agendadas.<br>Cria um evento na Agenda com categoria HUFAL.</div>`
-      : `
-        ${upcoming.length ? `<div style="font-family:'Playfair Display',serif;font-size:13.5px;margin-bottom:8px;">Por vir</div>${upcoming.map(renderWorkCard).join("")}` : ""}
-        ${past.length ? `<div style="font-family:'Playfair Display',serif;font-size:13.5px;margin:16px 0 8px;opacity:.6;">Concluídas</div>${past.slice(0,20).map(renderWorkCard).join("")}` : ""}
-      `}
+      : body + renderListForSelected("hufal", workEvents)
+    }
   `;
 }
 
