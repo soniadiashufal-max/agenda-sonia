@@ -48,10 +48,10 @@ function formatDueLabel(dateStr) {
 }
 function weekStart(d) { const dt = new Date(d + "T12:00:00"); dt.setDate(dt.getDate() - dt.getDay()); return dt.toISOString().split("T")[0]; }
 function esc(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
-function showToast(msg) {
+function showToast(msg, duration) {
   const root = document.getElementById("toast-root");
   root.innerHTML = `<div class="toast">${esc(msg)}</div>`;
-  setTimeout(() => { root.innerHTML = ""; }, 3000);
+  setTimeout(() => { root.innerHTML = ""; }, duration || 3000);
 }
 
 // ============================================================
@@ -108,6 +108,21 @@ async function onLoginSuccess() {
   await loadTasksFromSheet();
   await loadEventsFromCalendar();
   render();
+  checkUpcomingEvents();
+}
+
+function checkUpcomingEvents() {
+  const now = new Date();
+  const in2h = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+  const upcoming = state.events.filter(e => {
+    if (!e.startTime || e.date !== todayStr()) return false;
+    const evDateTime = new Date(`${e.date}T${e.startTime}:00`);
+    return evDateTime >= now && evDateTime <= in2h;
+  });
+  if (upcoming.length) {
+    const list = upcoming.map(e => `${e.startTime} · ${e.title}`).join("  /  ");
+    showToast(`Próximas 2h: ${list}`, 8000);
+  }
 }
 
 // ============================================================
@@ -149,6 +164,7 @@ async function loadEventsFromCalendar() {
       startTime: startDateTime ? startDateTime.split("T")[1].slice(0,5) : "",
       endTime: endDateTime ? endDateTime.split("T")[1].slice(0,5) : "",
       notes: ev.description || "",
+      location: ev.location || "",
       category: guessCategory(ev.summary, ev.description),
       gcal: true, pending: false,
     };
@@ -163,14 +179,18 @@ function guessCategory(title, notes) {
   return "Outro";
 }
 
+const DEFAULT_REMINDERS = { useDefault: false, overrides: [{ method: "popup", minutes: 30 }, { method: "popup", minutes: 24 * 60 }] };
+
 async function createCalendarEvent(ev) {
   const body = {
     summary: ev.title,
     description: ev.notes || "",
+    location: ev.location || "",
     start: ev.startTime ? { dateTime: `${ev.date}T${ev.startTime}:00`, timeZone: CONFIG.TIMEZONE } : { date: ev.date },
     end: ev.endTime ? { dateTime: `${ev.date}T${ev.endTime}:00`, timeZone: CONFIG.TIMEZONE }
        : ev.startTime ? { dateTime: `${ev.date}T${ev.startTime}:00`, timeZone: CONFIG.TIMEZONE }
        : { date: ev.date },
+    reminders: DEFAULT_REMINDERS,
   };
   const res = await gcalRequest("POST", "/calendars/primary/events", body);
   return res && res.id ? res.id : null;
@@ -181,10 +201,12 @@ async function updateCalendarEvent(ev) {
   const body = {
     summary: ev.title,
     description: ev.notes || "",
+    location: ev.location || "",
     start: ev.startTime ? { dateTime: `${ev.date}T${ev.startTime}:00`, timeZone: CONFIG.TIMEZONE } : { date: ev.date },
     end: ev.endTime ? { dateTime: `${ev.date}T${ev.endTime}:00`, timeZone: CONFIG.TIMEZONE }
        : ev.startTime ? { dateTime: `${ev.date}T${ev.startTime}:00`, timeZone: CONFIG.TIMEZONE }
        : { date: ev.date },
+    reminders: DEFAULT_REMINDERS,
   };
   const res = await gcalRequest("PATCH", `/calendars/primary/events/${ev.gcalEventId}`, body);
   return !!(res && res.id);
@@ -391,6 +413,7 @@ async function handleFormAdd() {
     startTime: document.getElementById("form-start").value,
     endTime: document.getElementById("form-end").value,
     notes: document.getElementById("form-notes").value,
+    location: document.getElementById("form-location")?.value || "",
     category: document.getElementById("form-category").value,
     gcal: false, pending: true,
   };
@@ -437,6 +460,7 @@ async function saveEditEvent(id) {
   ev.startTime = document.getElementById("evedit-start-input")?.value || "";
   ev.endTime = document.getElementById("evedit-end-input")?.value || "";
   ev.notes = document.getElementById("evedit-notes-input")?.value || "";
+  ev.location = document.getElementById("evedit-location-input")?.value || "";
   ev.category = document.getElementById("evedit-category-select")?.value || ev.category;
   state.editingEvent = null;
   state.selectedDate = ev.date; state.viewAnchor = ev.date;
@@ -795,7 +819,8 @@ function renderAddSection() {
             </div>
             <div class="form-field"><label class="form-label">Início</label><input type="time" class="form-input" id="form-start"></div>
             <div class="form-field"><label class="form-label">Fim</label><input type="time" class="form-input" id="form-end"></div>
-            <div class="form-field full"><label class="form-label">Notas / Local</label><input class="form-input" id="form-notes" placeholder="Opcional"></div>
+            <div class="form-field full"><label class="form-label">Local</label><input class="form-input" id="form-location" placeholder="Ex: Rua do Cliente, Fundão"></div>
+            <div class="form-field full"><label class="form-label">Notas</label><input class="form-input" id="form-notes" placeholder="Opcional"></div>
           </div>
           <button class="add-btn" id="form-add-btn">Adicionar à agenda</button>
         </div>
@@ -832,7 +857,8 @@ function renderEventCard(e) {
                 ${Object.keys(TEAL_HEX).map(k=>`<option value="${k}" ${k===e.category?'selected':''}>${k}</option>`).join("")}
               </select>
             </div>
-            <div class="form-field full"><label class="form-label">Notas / Local</label><input class="form-input" id="evedit-notes-input" value="${esc(e.notes||'')}"></div>
+            <div class="form-field full"><label class="form-label">Local</label><input class="form-input" id="evedit-location-input" value="${esc(e.location||'')}" placeholder="Ex: Rua do Cliente, Fundão"></div>
+            <div class="form-field full"><label class="form-label">Notas</label><input class="form-input" id="evedit-notes-input" value="${esc(e.notes||'')}"></div>
           </div>
           <div style="display:flex;gap:7px;">
             <button class="modal-cancel" style="flex:1;" onclick="cancelEditEvent()">Cancelar</button>
@@ -841,6 +867,7 @@ function renderEventCard(e) {
         </div>
       </div>`;
   }
+  const mapsUrl = e.location ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(e.location)}` : "";
   return `
     <div class="task-card" style="border-left:3px solid ${TEAL_HEX[e.category]||'#6b7280'};margin-bottom:7px;">
       <div class="task-main">
@@ -848,6 +875,7 @@ function renderEventCard(e) {
         <div class="task-body">
           <div class="task-title">${esc(e.title)}</div>
           ${e.notes?`<div class="task-meta">${esc(e.notes)}</div>`:""}
+          ${e.location?`<div class="task-meta"><a href="${mapsUrl}" target="_blank" rel="noopener" style="color:#3b6fd4;text-decoration:none;" onclick="event.stopPropagation()">📍 ${esc(e.location)}</a></div>`:""}
           <div class="task-meta">
             ${e.gcal?'<span style="color:#3b6fd4;">● Google Calendar</span>':''}
             ${e.pending?'<span style="color:#c97d1a;">A sincronizar…</span>':''}
