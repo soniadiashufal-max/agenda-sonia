@@ -19,7 +19,7 @@ const PT_DAYS_LONG = ["Domingo","Segunda","Terça","Quarta","Quinta","Sexta","S�
 let state = {
   accessToken: null,
   activeTab: "agenda",
-  calView: "mensal",
+  calView: "semanal",
   mode: "chat",
   messages: [{ role: "ai", text: "Olá, Sónia! Dita o que precisas de fazer com hora e dia." }],
   events: [],          // { id, title, date, startTime, endTime, notes, category, gcalEventId }
