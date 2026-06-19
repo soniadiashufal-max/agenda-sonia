@@ -156,6 +156,9 @@ async function loadEventsFromCalendar() {
     const startDate = ev.start?.date;
     const endDateTime = ev.end?.dateTime;
     const endDate = ev.end?.date;
+    const meetLink = ev.hangoutLink
+      || ev.conferenceData?.entryPoints?.find(p => p.entryPointType === "video")?.uri
+      || "";
     return {
       id: ev.id,
       gcalEventId: ev.id,
@@ -165,6 +168,7 @@ async function loadEventsFromCalendar() {
       endTime: endDateTime ? endDateTime.split("T")[1].slice(0,5) : "",
       notes: ev.description || "",
       location: ev.location || "",
+      meetLink,
       category: guessCategory(ev.summary, ev.description),
       gcal: true, pending: false,
     };
@@ -876,6 +880,7 @@ function renderEventCard(e) {
           <div class="task-title">${esc(e.title)}</div>
           ${e.notes?`<div class="task-meta">${esc(e.notes)}</div>`:""}
           ${e.location?`<div class="task-meta"><a href="${mapsUrl}" target="_blank" rel="noopener" style="color:#3b6fd4;text-decoration:none;" onclick="event.stopPropagation()">📍 ${esc(e.location)}</a></div>`:""}
+          ${e.meetLink?`<div class="task-meta"><a href="${esc(e.meetLink)}" target="_blank" rel="noopener" style="color:#1a73e8;text-decoration:none;font-weight:500;" onclick="event.stopPropagation()">🎥 Entrar no Google Meet</a></div>`:""}
           <div class="task-meta">
             ${e.gcal?'<span style="color:#3b6fd4;">● Google Calendar</span>':''}
             ${e.pending?'<span style="color:#c97d1a;">A sincronizar…</span>':''}
