@@ -15,9 +15,9 @@
 <script src="config.js"></script>
 <style>
 :root {
-  --teal: #2E8B7A;
-  --teal-dark: #1f6b5c;
-  --teal-light: #e8f5f2;
+  --teal: #058B8C;
+  --teal-dark: #035e5f;
+  --teal-light: #e3f4f4;
   --gray: #6b7280;
   --gray-light: #f4f6f5;
   --white: #ffffff;
@@ -78,16 +78,20 @@ body {
 
 /* WEEKLY */
 .week-grid { background: var(--white); border-radius: 14px; border: 1px solid #e5e9e8; overflow: hidden; margin-bottom: 14px; }
-.week-head { display: grid; grid-template-columns: repeat(7,1fr); border-bottom: 1px solid #e5e9e8; }
-.week-head-cell { text-align: center; padding: 10px 4px 8px; cursor: pointer; }
-.week-day-name { font-size: 10px; font-weight: 600; color: var(--gray); text-transform: uppercase; }
-.week-day-num { font-size: 15px; font-weight: 600; margin-top: 2px; }
-.week-head-cell.is-today .week-day-num { background: var(--teal); color: white; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; margin: 3px auto 0; }
-.week-body { display: grid; grid-template-columns: repeat(7,1fr); min-height: 100px; }
-.week-col { border-right: 1px solid #f0f3f2; padding: 6px 3px; cursor: pointer; }
-.week-col:last-child { border-right: none; }
-.week-col:hover { background: var(--teal-light); }
-.week-ev { font-size: 9.5px; padding: 3px 4px; border-radius: 4px; color: white; margin-bottom: 3px; font-weight: 500; line-height: 1.25; }
+.week-head { display: grid; border-bottom: 1px solid #e5e9e8; }
+.week-head-cell { text-align: center; padding: 8px 2px 6px; cursor: pointer; }
+.week-day-name { font-size: 9.5px; font-weight: 600; color: var(--gray); text-transform: uppercase; }
+.week-day-num { font-size: 14px; font-weight: 600; margin-top: 2px; }
+.week-head-cell.is-today .week-day-num { background: var(--teal); color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin: 2px auto 0; }
+.week-allday-row { display: grid; grid-template-columns: 34px repeat(7,1fr); border-bottom: 1px solid #e5e9e8; background: #fafcfb; }
+.week-allday-label { font-size: 9px; color: var(--gray); padding: 5px 2px; writing-mode: horizontal-tb; }
+.week-allday-col { border-left: 1px solid #f0f3f2; padding: 4px 3px; min-height: 22px; }
+.week-hours-scroll { max-height: 480px; overflow-y: auto; }
+.week-hour-row { display: grid; grid-template-columns: 34px repeat(7,1fr); border-bottom: 1px solid #f5f7f6; min-height: 46px; }
+.week-hour-label { font-size: 9.5px; color: #b0bab8; text-align: right; padding: 3px 4px 0 0; }
+.week-hour-col { border-left: 1px solid #f0f3f2; padding: 2px 3px; cursor: pointer; }
+.week-hour-col:hover { background: var(--teal-light); }
+.week-ev { font-size: 9px; padding: 2px 4px; border-radius: 4px; color: white; margin-bottom: 2px; font-weight: 500; line-height: 1.25; }
 
 /* DAILY */
 .day-panel { background: var(--white); border-radius: 14px; border: 1px solid #e5e9e8; overflow: hidden; margin-bottom: 14px; }
@@ -211,6 +215,7 @@ body {
     <div class="tab-nav">
       <button class="tab-btn active" id="tab-agenda" onclick="switchTab('agenda')">📅 Agenda</button>
       <button class="tab-btn" id="tab-tarefas" onclick="switchTab('tarefas')">✅ Tarefas <span class="tab-badge" id="pending-badge" style="display:none;"></span></button>
+      <button class="tab-btn" id="tab-hufal" onclick="switchTab('hufal')">🔧 HUFAL</button>
     </div>
     <div class="main" id="main-content"></div>
   </div>

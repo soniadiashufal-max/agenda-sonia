@@ -3,17 +3,19 @@
 // Vanilla JS. Sem frameworks. Sem build step.
 // ============================================================
 
-const TEAL_HEX = { BNI: "#d4001a", HUFAL: "#1f6b5c", "Reunião": "#c97d1a", Pessoal: "#7c6daa", Outro: "#6b7280" };
+const TEAL_HEX = { BNI: "#d4001a", HUFAL: "#035e5f", "Reunião": "#c97d1a", Pessoal: "#7c6daa", Outro: "#6b7280" };
 const TASK_TYPES = [
   { value: "Orçamento", icon: "📋", color: "#3b6fd4" },
   { value: "Produção", icon: "🗂️", color: "#7c6daa" },
   { value: "Encomenda", icon: "📦", color: "#c97d1a" },
-  { value: "Contacto", icon: "📞", color: "#1f6b5c" },
+  { value: "Contacto", icon: "📞", color: "#035e5f" },
   { value: "Outro", icon: "📌", color: "#6b7280" },
 ];
 const PT_MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 const PT_DAYS_SHORT = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
 const PT_DAYS_LONG = ["Domingo","Segunda","Terça","Quarta","Quinta","Sexta","Sábado"];
+const WORK_TYPES = ["Instalação", "Retificação de medidas", "Manutenção/Assistência", "Medição"];
+const WORK_KEYWORDS = ["instala", "retifica", "medi", "assist", "obra", "hufal"];
 
 // ---- STATE ----
 let state = {
@@ -24,6 +26,8 @@ let state = {
   messages: [{ role: "ai", text: "Olá, Sónia! Dita o que precisas de fazer com hora e dia." }],
   events: [],          // { id, title, date, startTime, endTime, notes, category, gcalEventId }
   tasks: [],           // { id, title, type, done, obs, createdAt, rowIndex }
+  works: {},           // { [gcalEventId]: { client, address, workType, team, techNotes } }
+  hufalEditingWork: null,
   selectedDate: todayStr(),
   viewAnchor: todayStr(),
   taskFilter: "Todos",
@@ -107,6 +111,7 @@ async function onLoginSuccess() {
   document.getElementById("main-app").style.display = "block";
   await loadTasksFromSheet();
   await loadEventsFromCalendar();
+  await loadWorksFromSheet();
   render();
   checkUpcomingEvents();
 }
@@ -300,6 +305,68 @@ async function rewriteAllTasks() {
   await sheetsRequest("PUT", `/values/${SHEET_RANGE}?valueInputOption=RAW`, { values: values.length ? values : [["", "", "", "", "", "", "", ""]] });
   // Reatribui rowIndex
   ordered.forEach((t, i) => { t.rowIndex = i + 2; });
+}
+
+// ============================================================
+// GOOGLE SHEETS API (obras HUFAL — ligadas a eventos por gcalEventId)
+// ============================================================
+const WORKS_SHEET_NAME = "Obras";
+const WORKS_RANGE = `${WORKS_SHEET_NAME}!A2:G1000`;
+const WORKS_HEADER_RANGE = `${WORKS_SHEET_NAME}!A1:G1`;
+
+async function ensureWorksSheetExists() {
+  try {
+    const meta = await sheetsRequest("GET", "");
+    const exists = meta?.sheets?.some(s => s.properties?.title === WORKS_SHEET_NAME);
+    if (!exists) {
+      await sheetsRequest("POST", ":batchUpdate", {
+        requests: [{ addSheet: { properties: { title: WORKS_SHEET_NAME } } }],
+      });
+    }
+    const data = await sheetsRequest("GET", `/values/${WORKS_HEADER_RANGE}`);
+    if (!data || !data.values || !data.values.length) {
+      await sheetsRequest("PUT", `/values/${WORKS_HEADER_RANGE}?valueInputOption=RAW`, {
+        values: [["EventID", "Cliente", "Morada", "Tipo de trabalho", "Equipa/Responsável", "Notas técnicas", "Criada em"]],
+      });
+    }
+  } catch {}
+}
+
+async function loadWorksFromSheet() {
+  try {
+    await ensureWorksSheetExists();
+    const data = await sheetsRequest("GET", `/values/${WORKS_RANGE}`);
+    if (!data || !data.values) { state.works = {}; return; }
+    const map = {};
+    data.values.forEach((row, i) => {
+      if (!row[0]) return;
+      map[row[0]] = {
+        eventId: row[0],
+        client: row[1] || "",
+        address: row[2] || "",
+        workType: row[3] || "",
+        team: row[4] || "",
+        techNotes: row[5] || "",
+        createdAt: row[6] || "",
+        rowIndex: i + 2,
+      };
+    });
+    state.works = map;
+  } catch {
+    state.works = {};
+  }
+}
+
+async function saveWork(work) {
+  const existing = state.works[work.eventId];
+  const row = [work.eventId, work.client, work.address, work.workType, work.team, work.techNotes, existing?.createdAt || new Date().toLocaleDateString("pt-PT")];
+  if (existing && existing.rowIndex) {
+    await sheetsRequest("PUT", `/values/${WORKS_SHEET_NAME}!A${existing.rowIndex}:G${existing.rowIndex}?valueInputOption=RAW`, { values: [row] });
+    state.works[work.eventId] = { ...work, createdAt: row[6], rowIndex: existing.rowIndex };
+  } else {
+    await sheetsRequest("POST", `/values/${WORKS_SHEET_NAME}!A:G:append?valueInputOption=RAW`, { values: [row] });
+    await loadWorksFromSheet();
+  }
 }
 
 // ============================================================
@@ -626,7 +693,8 @@ async function handleManualSync() {
   try {
     await loadEventsFromCalendar();
     await loadTasksFromSheet();
-    showToast("Agenda e tarefas atualizadas");
+    await loadWorksFromSheet();
+    showToast("Agenda, tarefas e obras atualizadas");
   } catch {
     showToast("Não foi possível sincronizar agora");
   }
@@ -652,9 +720,10 @@ function render() {
   document.getElementById("pending-badge").textContent = state.tasks.filter(t => !t.done).length;
   document.getElementById("tab-agenda").classList.toggle("active", state.activeTab === "agenda");
   document.getElementById("tab-tarefas").classList.toggle("active", state.activeTab === "tarefas");
+  document.getElementById("tab-hufal").classList.toggle("active", state.activeTab === "hufal");
 
   const main = document.getElementById("main-content");
-  main.innerHTML = state.activeTab === "agenda" ? renderAgendaTab() : renderTasksTab();
+  main.innerHTML = state.activeTab === "agenda" ? renderAgendaTab() : state.activeTab === "tarefas" ? renderTasksTab() : renderHufalTab();
   attachAgendaListeners();
   renderModal();
 }
@@ -728,11 +797,42 @@ function renderWeekly() {
     </div>`;
   }).join("");
 
-  const bodyHtml = days.map(d => {
-    const evs = eventsForDate(d);
-    return `<div class="week-col" onclick="selectDay('${d}')">
-      ${evs.length===0?`<div style="font-size:10px;color:#ccc;text-align:center;margin-top:14px;">·</div>`:
-        evs.map(e=>`<div class="week-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'}">${e.startTime?esc(e.startTime)+'<br>':''}${esc(e.title)}</div>`).join("")}
+  // Eventos da semana, separados em "com hora" e "dia inteiro"
+  const weekEvsByDay = days.map(d => eventsForDate(d));
+  const allDayByDay = weekEvsByDay.map(evs => evs.filter(e => !e.startTime));
+  const timedByDay = weekEvsByDay.map(evs => evs.filter(e => e.startTime));
+
+  // Intervalo de horas: 7h-19h por defeito, expande se houver eventos fora
+  let minHour = 7, maxHour = 19;
+  timedByDay.flat().forEach(e => {
+    const sh = parseInt(e.startTime.slice(0,2), 10);
+    const eh = e.endTime ? parseInt(e.endTime.slice(0,2), 10) : sh;
+    if (sh < minHour) minHour = sh;
+    if (eh > maxHour) maxHour = eh;
+    if (!e.endTime && sh + 1 > maxHour) maxHour = sh + 1;
+  });
+  const hours = [];
+  for (let h = minHour; h <= maxHour; h++) hours.push(h);
+
+  const hasAllDay = allDayByDay.some(arr => arr.length > 0);
+  const alldayRowHtml = hasAllDay ? `
+    <div class="week-allday-row">
+      <div class="week-allday-label">Dia inteiro</div>
+      ${days.map((d,i) => `<div class="week-allday-col">
+        ${allDayByDay[i].map(e=>`<div class="week-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="openEditEvent('${e.id}')">${esc(e.title)}</div>`).join("")}
+      </div>`).join("")}
+    </div>` : "";
+
+  const gridRowsHtml = hours.map(h => {
+    const hStr = String(h).padStart(2,"0") + ":";
+    return `<div class="week-hour-row">
+      <div class="week-hour-label">${hStr}</div>
+      ${days.map((d,i) => {
+        const hEvs = timedByDay[i].filter(e => parseInt(e.startTime.slice(0,2),10) === h);
+        return `<div class="week-hour-col" onclick="selectDay('${d}')">
+          ${hEvs.map(e=>`<div class="week-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="event.stopPropagation();openEditEvent('${e.id}')">${esc(e.startTime)}${e.endTime?'–'+esc(e.endTime):''}<br>${esc(e.title)}</div>`).join("")}
+        </div>`;
+      }).join("")}
     </div>`;
   }).join("");
 
@@ -746,8 +846,12 @@ function renderWeekly() {
       ${renderViewPills()}
     </div>
     <div class="week-grid">
-      <div class="week-head">${headHtml}</div>
-      <div class="week-body">${bodyHtml}</div>
+      <div class="week-head" style="grid-template-columns:34px repeat(7,1fr);">
+        <div></div>
+        ${headHtml}
+      </div>
+      ${alldayRowHtml}
+      <div class="week-hours-scroll">${gridRowsHtml}</div>
     </div>`;
 }
 
@@ -875,7 +979,7 @@ function renderEventCard(e) {
   return `
     <div class="task-card" style="border-left:3px solid ${TEAL_HEX[e.category]||'#6b7280'};margin-bottom:7px;">
       <div class="task-main">
-        <div style="font-size:11px;font-weight:600;color:#1f6b5c;min-width:36px;">${esc(e.startTime||'–')}</div>
+        <div style="font-size:11px;font-weight:600;color:#035e5f;min-width:36px;">${esc(e.startTime||'–')}</div>
         <div class="task-body">
           <div class="task-title">${esc(e.title)}</div>
           ${e.notes?`<div class="task-meta">${esc(e.notes)}</div>`:""}
@@ -916,7 +1020,7 @@ function renderTasksTab() {
               ${editOpen ? "" : `<div class="task-meta">
                 <span style="color:${typeInfo.color};font-weight:500;">${typeInfo.icon} ${t.type}</span>
                 <span>· ${esc(t.createdAt)}</span>
-                ${t.obs?'<span style="color:#1f6b5c;">· 📝</span>':''}
+                ${t.obs?'<span style="color:#035e5f;">· 📝</span>':''}
                 ${t.dueDate?`<span style="color:${(t.dueDate < todayStr() && !t.done) ? '#e57373' : '#c97d1a'};font-weight:500;">· ⏰ ${(t.dueDate < todayStr() && !t.done) ? 'Atrasada · ' : ''}${esc(formatDueLabel(t.dueDate))}${t.dueTime?' às '+esc(t.dueTime):''}</span>`:''}
               </div>`}
             </div>
@@ -973,6 +1077,118 @@ function renderTasksTab() {
       ${filters.map(f=>`<button class="filter-chip ${state.taskFilter===f?'active':''}" onclick="setTaskFilter('${f}')">${f}</button>`).join("")}
     </div>
     ${tasksHtml}
+  `;
+}
+
+// ============================================================
+// SEPARADOR HUFAL (instalações / obras)
+// ============================================================
+function isHufalWorkEvent(ev) {
+  if (ev.category === "HUFAL") return true;
+  const t = (ev.title || "").toLowerCase();
+  return WORK_KEYWORDS.some(k => t.includes(k));
+}
+
+function openHufalEdit(eventId) {
+  state.hufalEditingWork = eventId;
+  render();
+}
+
+function cancelHufalEdit() {
+  state.hufalEditingWork = null;
+  render();
+}
+
+async function saveHufalWork(eventId) {
+  const client = document.getElementById("hufal-client-input")?.value.trim() || "";
+  const address = document.getElementById("hufal-address-input")?.value.trim() || "";
+  const workType = document.getElementById("hufal-type-select")?.value || "";
+  const team = document.getElementById("hufal-team-input")?.value.trim() || "";
+  const techNotes = document.getElementById("hufal-technotes-input")?.value.trim() || "";
+  await saveWork({ eventId, client, address, workType, team, techNotes });
+  state.hufalEditingWork = null;
+  render();
+  showToast("Dados da obra guardados");
+}
+
+function renderHufalTab() {
+  const workEvents = state.events
+    .filter(isHufalWorkEvent)
+    .sort((a, b) => (a.date + (a.startTime||"99:99")).localeCompare(b.date + (b.startTime||"99:99")));
+
+  const upcoming = workEvents.filter(e => e.date >= todayStr());
+  const past = workEvents.filter(e => e.date < todayStr());
+
+  const renderWorkCard = (ev) => {
+    const work = state.works[ev.gcalEventId] || {};
+    const editOpen = state.hufalEditingWork === ev.gcalEventId;
+    const d = new Date(ev.date + "T12:00:00");
+    const dateLabel = `${PT_DAYS_SHORT[d.getDay()]}, ${d.getDate()} ${PT_MONTHS[d.getMonth()].slice(0,3)}`;
+
+    if (editOpen) {
+      return `
+        <div class="task-card" style="border-left:3px solid var(--teal-dark);margin-bottom:8px;">
+          <div class="task-main" style="padding-bottom:0;">
+            <div class="task-body">
+              <div class="task-title">${esc(ev.title)}</div>
+              <div class="task-meta">${dateLabel}${ev.startTime?' · '+esc(ev.startTime):''}</div>
+            </div>
+          </div>
+          <div class="task-obs-area" style="flex-direction:column;align-items:stretch;gap:8px;">
+            <div class="form-grid" style="margin-bottom:0;">
+              <div class="form-field full"><label class="form-label">Cliente</label><input class="form-input" id="hufal-client-input" value="${esc(work.client||'')}" placeholder="Nome do cliente"></div>
+              <div class="form-field full"><label class="form-label">Morada</label><input class="form-input" id="hufal-address-input" value="${esc(work.address||'')}" placeholder="Morada da obra"></div>
+              <div class="form-field full"><label class="form-label">Tipo de trabalho</label>
+                <select class="form-input" id="hufal-type-select">
+                  <option value="">— Selecionar —</option>
+                  ${WORK_TYPES.map(w => `<option value="${w}" ${w===work.workType?'selected':''}>${w}</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field full"><label class="form-label">Equipa / Responsável</label><input class="form-input" id="hufal-team-input" value="${esc(work.team||'')}" placeholder="Ex: Hugo, equipa externa…"></div>
+              <div class="form-field full"><label class="form-label">Notas técnicas</label><input class="form-input" id="hufal-technotes-input" value="${esc(work.techNotes||'')}" placeholder="Medidas, materiais, observações…"></div>
+            </div>
+            <div style="display:flex;gap:7px;">
+              <button class="modal-cancel" style="flex:1;" onclick="cancelHufalEdit()">Cancelar</button>
+              <button class="obs-save-btn" style="flex:1;" onclick="saveHufalWork('${ev.gcalEventId}')">Guardar</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    const hasWork = work.client || work.address || work.workType || work.team || work.techNotes;
+    return `
+      <div class="task-card" style="border-left:3px solid var(--teal-dark);margin-bottom:8px;">
+        <div class="task-main">
+          <div style="font-size:11px;font-weight:600;color:var(--teal-dark);min-width:62px;">${dateLabel}${ev.startTime?'<br>'+esc(ev.startTime):''}</div>
+          <div class="task-body">
+            <div class="task-title">${esc(ev.title)}</div>
+            ${work.workType?`<div class="task-meta"><span style="color:var(--teal-dark);font-weight:500;">🔧 ${esc(work.workType)}</span></div>`:""}
+            ${work.client?`<div class="task-meta">👤 ${esc(work.client)}</div>`:""}
+            ${work.address?`<div class="task-meta"><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(work.address)}" target="_blank" rel="noopener" style="color:#3b6fd4;text-decoration:none;">📍 ${esc(work.address)}</a></div>`:""}
+            ${work.team?`<div class="task-meta">🧑‍🔧 ${esc(work.team)}</div>`:""}
+            ${!hasWork?`<div class="task-meta" style="color:#c97d1a;">Sem dados de obra preenchidos</div>`:""}
+          </div>
+          <button class="icon-btn" onclick="openHufalEdit('${ev.gcalEventId}')" title="Editar dados da obra">✏️</button>
+        </div>
+      </div>`;
+  };
+
+  return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+      <button class="nav-btn" onclick="handleManualSync()" title="Sincronizar" ${state.syncing?'disabled':''}>${state.syncing?'⏳ A sincronizar…':'🔄 Sincronizar'}</button>
+    </div>
+    <div class="task-stats">
+      <div class="stat-box"><div class="stat-num">${workEvents.length}</div><div class="stat-label">Total</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:#3b6fd4;">${upcoming.length}</div><div class="stat-label">Por vir</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:var(--gray);">${past.length}</div><div class="stat-label">Concluídas</div></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--gray);margin-bottom:12px;">Mostra eventos da Agenda marcados como HUFAL ou com palavras como "instalação", "retificação", "medição", "assistência".</div>
+    ${workEvents.length === 0
+      ? `<div class="empty-state"><div style="font-size:26px;margin-bottom:6px;">🔧</div>Sem instalações ou obras agendadas.<br>Cria um evento na Agenda com categoria HUFAL.</div>`
+      : `
+        ${upcoming.length ? `<div style="font-family:'Playfair Display',serif;font-size:13.5px;margin-bottom:8px;">Por vir</div>${upcoming.map(renderWorkCard).join("")}` : ""}
+        ${past.length ? `<div style="font-family:'Playfair Display',serif;font-size:13.5px;margin:16px 0 8px;opacity:.6;">Concluídas</div>${past.slice(0,20).map(renderWorkCard).join("")}` : ""}
+      `}
   `;
 }
 
