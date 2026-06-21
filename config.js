@@ -8,7 +8,7 @@ const CONFIG = {
 
   GOOGLE_SHEET_ID: "17fz0b_fFU7GWtb4hPzXNTCdQM1qyeemwXqjyIlkObRg",
 
-  ANTHROPIC_API_KEY: "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",
+  ANTHROPIC_API_KEY: "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",
 
   // Não é necessário alterar nada abaixo desta linha.
   GOOGLE_SCOPES: "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/spreadsheets",
