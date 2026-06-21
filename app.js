@@ -15,7 +15,6 @@ const PT_MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho"
 const PT_DAYS_SHORT = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
 const PT_DAYS_LONG = ["Domingo","Segunda","Terça","Quarta","Quinta","Sexta","Sábado"];
 const WORK_TYPES = ["Instalação", "Retificação de medidas", "Manutenção/Assistência", "Medição"];
-const WORK_KEYWORDS = ["instala", "retifica", "medi", "assist", "obra", "hufal"];
 
 // ---- STATE ----
 let state = {
@@ -27,8 +26,11 @@ let state = {
   messages: [{ role: "ai", text: "Olá, Sónia! Dita o que precisas de fazer com hora e dia." }],
   events: [],          // { id, title, date, startTime, endTime, notes, category, gcalEventId }
   tasks: [],           // { id, title, type, done, obs, createdAt, rowIndex }
-  works: {},           // { [gcalEventId]: { client, address, workType, team, techNotes } }
+  works: [],            // { id, title, date, startTime, endTime, client, address, workType, team, techNotes, createdAt, rowIndex } — quadro HUFAL, independente do Google Calendar
   hufalEditingWork: null,
+  hufalMode: "chat",
+  hufalMessages: [{ role: "ai", text: "Dita uma obra: título, dia, hora, cliente, morada. Fica registado no quadro HUFAL, não no Google Calendar." }],
+  hufalLoading: false,
   selectedDate: todayStr(),
   viewAnchor: todayStr(),
   taskFilter: "Todos",
@@ -256,15 +258,19 @@ async function sheetsRequest(method, path, body) {
     location.reload();
     return null;
   }
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) {
+    const msg = data?.error?.message || `Erro ${res.status} no Google Sheets`;
+    throw new Error(msg);
+  }
+  return data;
 }
 
 async function loadTasksFromSheet() {
   try {
     await ensureSheetHeader();
     const data = await sheetsRequest("GET", `/values/${SHEET_RANGE}`);
-    if (!data || !data.values) { state.tasks = []; return; }
-    state.tasks = data.values.map((row, i) => ({
+    state.tasks = (data && data.values ? data.values : []).map((row, i) => ({
       id: row[0] || String(i),
       title: row[1] || "",
       type: row[2] || "Outro",
@@ -275,15 +281,19 @@ async function loadTasksFromSheet() {
       dueTime: row[7] || "",
       rowIndex: i + 2,
     })).reverse();
-  } catch {
-    state.tasks = [];
+  } catch (e) {
+    // Não apaga as tarefas já visíveis; só avisa que não conseguiu atualizar.
+    showToast(`Não foi possível carregar as tarefas do Sheet (${e.message || "erro"})`);
   }
 }
 
 async function appendTaskToSheet(task) {
-  await sheetsRequest("POST", `/values/${SHEET_RANGE.split("!")[0]}!A:H:append?valueInputOption=RAW`, {
+  const res = await sheetsRequest("POST", `/values/${SHEET_RANGE.split("!")[0]}!A:H:append?valueInputOption=RAW`, {
     values: [[task.id, task.title, task.type, task.done ? "TRUE" : "FALSE", task.obs, task.createdAt, task.dueDate || "", task.dueTime || ""]],
   });
+  const range = res?.updates?.updatedRange || "";
+  const match = range.match(/![A-Z]+(\d+):/);
+  if (match) task.rowIndex = parseInt(match[1], 10);
 }
 
 async function updateTaskRow(task) {
@@ -309,11 +319,12 @@ async function rewriteAllTasks() {
 }
 
 // ============================================================
-// GOOGLE SHEETS API (obras HUFAL — ligadas a eventos por gcalEventId)
+// GOOGLE SHEETS API (quadro HUFAL — independente do Google Calendar)
 // ============================================================
 const WORKS_SHEET_NAME = "Obras";
-const WORKS_RANGE = `${WORKS_SHEET_NAME}!A2:G1000`;
-const WORKS_HEADER_RANGE = `${WORKS_SHEET_NAME}!A1:G1`;
+const WORKS_RANGE = `${WORKS_SHEET_NAME}!A2:K1000`;
+const WORKS_HEADER_RANGE = `${WORKS_SHEET_NAME}!A1:K1`;
+const WORKS_HEADER = ["ID", "Título", "Data", "Início", "Fim", "Cliente", "Morada", "Tipo de trabalho", "Equipa/Responsável", "Notas técnicas", "Criada em"];
 
 async function ensureWorksSheetExists() {
   try {
@@ -324,50 +335,59 @@ async function ensureWorksSheetExists() {
         requests: [{ addSheet: { properties: { title: WORKS_SHEET_NAME } } }],
       });
     }
-    const data = await sheetsRequest("GET", `/values/${WORKS_HEADER_RANGE}`);
-    if (!data || !data.values || !data.values.length) {
-      await sheetsRequest("PUT", `/values/${WORKS_HEADER_RANGE}?valueInputOption=RAW`, {
-        values: [["EventID", "Cliente", "Morada", "Tipo de trabalho", "Equipa/Responsável", "Notas técnicas", "Criada em"]],
-      });
-    }
+    await sheetsRequest("PUT", `/values/${WORKS_HEADER_RANGE}?valueInputOption=RAW`, { values: [WORKS_HEADER] });
   } catch {}
+}
+
+function workToRow(w) {
+  return [w.id, w.title, w.date, w.startTime || "", w.endTime || "", w.client || "", w.address || "", w.workType || "", w.team || "", w.techNotes || "", w.createdAt || ""];
 }
 
 async function loadWorksFromSheet() {
   try {
     await ensureWorksSheetExists();
     const data = await sheetsRequest("GET", `/values/${WORKS_RANGE}`);
-    if (!data || !data.values) { state.works = {}; return; }
-    const map = {};
-    data.values.forEach((row, i) => {
-      if (!row[0]) return;
-      map[row[0]] = {
-        eventId: row[0],
-        client: row[1] || "",
-        address: row[2] || "",
-        workType: row[3] || "",
-        team: row[4] || "",
-        techNotes: row[5] || "",
-        createdAt: row[6] || "",
-        rowIndex: i + 2,
-      };
-    });
-    state.works = map;
-  } catch {
-    state.works = {};
+    state.works = (data && data.values ? data.values : []).filter(r => r[0]).map((row, i) => ({
+      id: row[0],
+      title: row[1] || "",
+      date: row[2] || "",
+      startTime: row[3] || "",
+      endTime: row[4] || "",
+      client: row[5] || "",
+      address: row[6] || "",
+      workType: row[7] || "",
+      team: row[8] || "",
+      techNotes: row[9] || "",
+      createdAt: row[10] || "",
+      category: "HUFAL",
+      rowIndex: i + 2,
+    }));
+  } catch (e) {
+    showToast(`Não foi possível carregar o quadro HUFAL (${e.message || "erro"})`);
   }
 }
 
-async function saveWork(work) {
-  const existing = state.works[work.eventId];
-  const row = [work.eventId, work.client, work.address, work.workType, work.team, work.techNotes, existing?.createdAt || new Date().toLocaleDateString("pt-PT")];
-  if (existing && existing.rowIndex) {
-    await sheetsRequest("PUT", `/values/${WORKS_SHEET_NAME}!A${existing.rowIndex}:G${existing.rowIndex}?valueInputOption=RAW`, { values: [row] });
-    state.works[work.eventId] = { ...work, createdAt: row[6], rowIndex: existing.rowIndex };
-  } else {
-    await sheetsRequest("POST", `/values/${WORKS_SHEET_NAME}!A:G:append?valueInputOption=RAW`, { values: [row] });
-    await loadWorksFromSheet();
-  }
+async function appendWorkToSheet(w) {
+  const res = await sheetsRequest("POST", `/values/${WORKS_SHEET_NAME}!A:K:append?valueInputOption=RAW`, { values: [workToRow(w)] });
+  const range = res?.updates?.updatedRange || "";
+  const match = range.match(/![A-Z]+(\d+):/);
+  if (match) w.rowIndex = parseInt(match[1], 10);
+}
+
+async function updateWorkRow(w) {
+  if (!w.rowIndex) return;
+  await sheetsRequest("PUT", `/values/${WORKS_SHEET_NAME}!A${w.rowIndex}:K${w.rowIndex}?valueInputOption=RAW`, { values: [workToRow(w)] });
+}
+
+async function deleteWorkRow(w) {
+  state.works = state.works.filter(x => x.id !== w.id);
+  await rewriteAllWorks();
+}
+
+async function rewriteAllWorks() {
+  const values = state.works.map(workToRow);
+  await sheetsRequest("PUT", `/values/${WORKS_RANGE}?valueInputOption=RAW`, { values: values.length ? values : [["","","","","","","","","","",""]] });
+  state.works.forEach((w, i) => { w.rowIndex = i + 2; });
 }
 
 // ============================================================
@@ -433,6 +453,23 @@ async function parseTaskText(text, type) {
   return callClaude(
     `Task assistant for Sónia (HUFAL caixilharia alumínio/PVC, BNI). Reply ONLY JSON: {"title":"clear concise title","reply":"short elegant confirmation in European Portuguese"}`,
     `Tipo: ${type}. Tarefa: ${text}`, 300
+  );
+}
+
+async function parseWorkText(text) {
+  const today = todayStr();
+  const tomorrow = addDays(today, 1);
+  return callClaude(
+    `És um assistente para Sónia, da HUFAL (caixilharia de alumínio e PVC), a registar obras num quadro de planeamento.
+Hoje é ${today}. Amanhã é ${tomorrow}.
+Extrai os dados de uma obra a partir do texto ditado. Responde APENAS com JSON válido, sem texto antes ou depois, sem backticks:
+{"title":"título curto da obra","date":"YYYY-MM-DD","startTime":"HH:MM","endTime":"HH:MM","client":"nome do cliente, se mencionado, senão vazio","address":"morada, se mencionada, senão vazio","workType":"Instalação|Retificação de medidas|Manutenção/Assistência|Medição|","team":"equipa ou responsável, se mencionado, senão vazio","reply":"confirmação curta e elegante em português de Portugal"}
+Regras:
+- O título nunca deve conter palavras de data ou hora.
+- Interpreta datas relativas (amanhã, sexta-feira, etc) e converte sempre para YYYY-MM-DD.
+- Se não houver hora mencionada, usa "". Se não houver dia mencionado, usa ${today}.
+- Só preenche "workType" se corresponder claramente a um dos quatro tipos listados; caso contrário deixa "".`,
+    text, 700
   );
 }
 
@@ -575,8 +612,11 @@ async function handleAddTask() {
   render();
   showToast(reply);
 
-  await appendTaskToSheet(task);
-  await loadTasksFromSheet(); // sincroniza rowIndex
+  try {
+    await appendTaskToSheet(task);
+  } catch (e) {
+    showToast(`Guardada só neste dispositivo por agora (${e.message || "erro de ligação"})`);
+  }
   render();
 }
 
@@ -585,7 +625,7 @@ async function toggleTaskDone(id) {
   if (!task) return;
   task.done = !task.done;
   render();
-  await updateTaskRow(task);
+  try { await updateTaskRow(task); } catch (e) { showToast(`Não sincronizou (${e.message || "erro"})`); }
 }
 
 function openObs(id) {
@@ -606,8 +646,8 @@ async function saveObs(id) {
   task.obs = el ? el.value : task.obs;
   state.expandedObs = null;
   render();
-  await updateTaskRow(task);
-  showToast("Observação guardada");
+  try { await updateTaskRow(task); showToast("Observação guardada"); }
+  catch (e) { showToast(`Não sincronizou (${e.message || "erro"})`); }
 }
 
 function openEditTask(id) {
@@ -640,14 +680,14 @@ async function saveEditTask(id) {
   task.dueTime = timeEl ? timeEl.value : task.dueTime;
   state.editingTask = null;
   render();
-  await updateTaskRow(task);
-  showToast("Tarefa atualizada");
+  try { await updateTaskRow(task); showToast("Tarefa atualizada"); }
+  catch (e) { showToast(`Não sincronizou (${e.message || "erro"})`); }
 }
 
 async function handleDeleteTask(id) {
   const task = state.tasks.find(t => t.id === id);
   if (!task) return;
-  await deleteTaskRow(task);
+  try { await deleteTaskRow(task); } catch (e) { showToast(`Não sincronizou (${e.message || "erro"})`); }
   render();
 }
 
@@ -683,6 +723,10 @@ async function confirmScheduleTask() {
 function eventsForDate(d, list) {
   const source = list || state.events;
   return source.filter(e => e.date === d).sort((a, b) => (a.startTime || "99").localeCompare(b.startTime || "99"));
+}
+
+function itemClick(scope, id) {
+  return scope === "hufal" ? `openHufalEdit('${id}')` : `openEditEvent('${id}')`;
 }
 
 // ============================================================
@@ -725,6 +769,9 @@ function render() {
   document.getElementById("tab-hufal").classList.toggle("active", state.activeTab === "hufal");
 
   const main = document.getElementById("main-content");
+  main.classList.toggle("tab-bg-agenda", state.activeTab === "agenda");
+  main.classList.toggle("tab-bg-tarefas", state.activeTab === "tarefas");
+  main.classList.toggle("tab-bg-hufal", state.activeTab === "hufal");
   main.innerHTML = state.activeTab === "agenda" ? renderAgendaTab() : state.activeTab === "tarefas" ? renderTasksTab() : renderHufalTab();
   attachAgendaListeners();
   renderModal();
@@ -826,7 +873,7 @@ function renderWeekly(scope, eventsList) {
     <div class="week-allday-row">
       <div class="week-allday-label">Dia inteiro</div>
       ${days.map((d,i) => `<div class="week-allday-col">
-        ${allDayByDay[i].map(e=>`<div class="week-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="openEditEvent('${e.id}')">${esc(e.title)}</div>`).join("")}
+        ${allDayByDay[i].map(e=>`<div class="week-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="${itemClick(scope, e.id)}">${esc(e.title)}</div>`).join("")}
       </div>`).join("")}
     </div>` : "";
 
@@ -837,7 +884,7 @@ function renderWeekly(scope, eventsList) {
       ${days.map((d,i) => {
         const hEvs = timedByDay[i].filter(e => parseInt(e.startTime.slice(0,2),10) === h);
         return `<div class="week-hour-col" onclick="selectDay('${d}','${scope}')">
-          ${hEvs.map(e=>`<div class="week-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="event.stopPropagation();openEditEvent('${e.id}')">${esc(e.startTime)}${e.endTime?'–'+esc(e.endTime):''}<br>${esc(e.title)}</div>`).join("")}
+          ${hEvs.map(e=>`<div class="week-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="event.stopPropagation();${itemClick(scope, e.id)}">${esc(e.startTime)}${e.endTime?'–'+esc(e.endTime):''}<br>${esc(e.title)}</div>`).join("")}
         </div>`;
       }).join("")}
     </div>`;
@@ -871,14 +918,14 @@ function renderDaily(scope, eventsList) {
   const allDay = dayEvs.filter(e => !e.startTime);
   const hours = Array.from({length:14}, (_,i) => i + 7);
 
-  const alldayHtml = allDay.length ? `<div class="day-allday"><div class="allday-label">Dia inteiro</div>${allDay.map(e=>`<div class="allday-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="openEditEvent('${e.id}')">${esc(e.title)}</div>`).join("")}</div>` : "";
+  const alldayHtml = allDay.length ? `<div class="day-allday"><div class="allday-label">Dia inteiro</div>${allDay.map(e=>`<div class="allday-ev" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="${itemClick(scope, e.id)}">${esc(e.title)}</div>`).join("")}</div>` : "";
 
   const hoursHtml = hours.map(h => {
     const hStr = String(h).padStart(2,"0") + ":";
     const hEvs = withTime.filter(e => e.startTime.startsWith(String(h).padStart(2,"0")));
     return `<div class="hour-row">
       <div class="hour-label">${hStr}</div>
-      <div class="hour-line">${hEvs.map(e=>`<div class="hour-event" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="openEditEvent('${e.id}')">${esc(e.startTime)}${e.endTime?' — '+esc(e.endTime):''} · ${esc(e.title)}</div>`).join("")}</div>
+      <div class="hour-line">${hEvs.map(e=>`<div class="hour-event" style="background:${TEAL_HEX[e.category]||'#6b7280'};cursor:pointer;" onclick="${itemClick(scope, e.id)}">${esc(e.startTime)}${e.endTime?' — '+esc(e.endTime):''} · ${esc(e.title)}</div>`).join("")}</div>
     </div>`;
   }).join("");
 
@@ -992,7 +1039,7 @@ function renderEventCard(e) {
     <div class="task-card" style="border-left:3px solid ${TEAL_HEX[e.category]||'#6b7280'};margin-bottom:7px;">
       <div class="task-main">
         <div style="font-size:11px;font-weight:600;color:#035e5f;min-width:36px;">${esc(e.startTime||'–')}</div>
-        <div class="task-body">
+        <div class="task-body" onclick="openEditEvent('${e.id}')" style="cursor:pointer;">
           <div class="task-title">${esc(e.title)}</div>
           ${e.notes?`<div class="task-meta">${esc(e.notes)}</div>`:""}
           ${e.location?`<div class="task-meta"><a href="${mapsUrl}" target="_blank" rel="noopener" style="color:#3b6fd4;text-decoration:none;" onclick="event.stopPropagation()">📍 ${esc(e.location)}</a></div>`:""}
@@ -1027,7 +1074,7 @@ function renderTasksTab() {
         <div class="task-card ${t.done?'done':''}">
           <div class="task-main">
             <button class="task-checkbox ${t.done?'checked':''}" onclick="toggleTaskDone('${t.id}')">${t.done?'<span class="check-icon">✓</span>':''}</button>
-            <div class="task-body">
+            <div class="task-body" ${editOpen ? "" : `onclick="openEditTask('${t.id}')" style="cursor:pointer;"`}>
               ${editOpen ? "" : `<div class="task-title ${t.done?'done-text':''}">${esc(t.title)}</div>`}
               ${editOpen ? "" : `<div class="task-meta">
                 <span style="color:${typeInfo.color};font-weight:500;">${typeInfo.icon} ${t.type}</span>
@@ -1093,17 +1140,79 @@ function renderTasksTab() {
 }
 
 // ============================================================
-// SEPARADOR HUFAL (instalações / obras)
+// SEPARADOR HUFAL — quadro de obras independente (não sincroniza com o Google Calendar)
 // ============================================================
-function isHufalWorkEvent(ev) {
-  if (ev.category === "HUFAL") return true;
-  const t = (ev.title || "").toLowerCase();
-  return WORK_KEYWORDS.some(k => t.includes(k));
+function setHufalMode(m) { state.hufalMode = m; render(); }
+
+async function handleHufalSend() {
+  const input = document.getElementById("hufal-chat-input");
+  const text = input.value.trim();
+  if (!text || state.hufalLoading) return;
+  input.value = "";
+  state.hufalMessages.push({ role: "user", text });
+  state.hufalLoading = true;
+  render();
+
+  let w = null;
+  try {
+    const p = await parseWorkText(text);
+    w = {
+      id: "w_" + Date.now(), title: p.title || text, date: p.date || todayStr(),
+      startTime: p.startTime || "", endTime: p.endTime || "",
+      client: p.client || "", address: p.address || "",
+      workType: WORK_TYPES.includes(p.workType) ? p.workType : "",
+      team: p.team || "", techNotes: "", createdAt: new Date().toLocaleDateString("pt-PT"), category: "HUFAL",
+    };
+    state.works.push(w);
+    state.hufalMessages.push({ role: "ai", text: p.reply || `Adicionei ao quadro: ${w.title}` });
+    state.selectedDate = w.date; state.viewAnchor = w.date;
+  } catch (e) {
+    state.hufalMessages.push({ role: "ai", text: `Não consegui interpretar (${e.message || "erro"}). Tenta o formulário?` });
+  }
+  state.hufalLoading = false;
+  render();
+
+  if (w) {
+    try {
+      await appendWorkToSheet(w);
+    } catch (e) {
+      showToast(`Guardada só neste dispositivo por agora (${e.message || "erro de ligação"})`);
+    }
+    render();
+  }
 }
 
-function openHufalEdit(eventId) {
-  state.hufalEditingWork = eventId;
+async function handleHufalFormAdd() {
+  const title = document.getElementById("hufal-form-title")?.value.trim();
+  if (!title) return;
+  const w = {
+    id: "w_" + Date.now(), title,
+    date: document.getElementById("hufal-form-date")?.value || todayStr(),
+    startTime: document.getElementById("hufal-form-start")?.value || "",
+    endTime: document.getElementById("hufal-form-end")?.value || "",
+    client: document.getElementById("hufal-form-client")?.value.trim() || "",
+    address: document.getElementById("hufal-form-address")?.value.trim() || "",
+    workType: document.getElementById("hufal-form-type")?.value || "",
+    team: document.getElementById("hufal-form-team")?.value.trim() || "",
+    techNotes: document.getElementById("hufal-form-technotes")?.value.trim() || "",
+    createdAt: new Date().toLocaleDateString("pt-PT"), category: "HUFAL",
+  };
+  state.works.push(w);
+  state.selectedDate = w.date; state.viewAnchor = w.date;
   render();
+  try {
+    await appendWorkToSheet(w);
+    showToast("Obra adicionada ao quadro HUFAL");
+  } catch (e) {
+    showToast(`Guardada só neste dispositivo por agora (${e.message || "erro de ligação"})`);
+  }
+  render();
+}
+
+function openHufalEdit(id) {
+  state.hufalEditingWork = id;
+  render();
+  setTimeout(() => { document.getElementById("hufal-edit-title")?.focus(); }, 0);
 }
 
 function cancelHufalEdit() {
@@ -1111,93 +1220,153 @@ function cancelHufalEdit() {
   render();
 }
 
-async function saveHufalWork(eventId) {
-  const client = document.getElementById("hufal-client-input")?.value.trim() || "";
-  const address = document.getElementById("hufal-address-input")?.value.trim() || "";
-  const workType = document.getElementById("hufal-type-select")?.value || "";
-  const team = document.getElementById("hufal-team-input")?.value.trim() || "";
-  const techNotes = document.getElementById("hufal-technotes-input")?.value.trim() || "";
-  await saveWork({ eventId, client, address, workType, team, techNotes });
+async function saveHufalWork(id) {
+  const w = state.works.find(x => x.id === id);
+  if (!w) return;
+  const title = document.getElementById("hufal-edit-title")?.value.trim();
+  if (!title) { showToast("O título não pode ficar vazio"); return; }
+  w.title = title;
+  w.date = document.getElementById("hufal-edit-date")?.value || w.date;
+  w.startTime = document.getElementById("hufal-edit-start")?.value || "";
+  w.endTime = document.getElementById("hufal-edit-end")?.value || "";
+  w.client = document.getElementById("hufal-client-input")?.value.trim() || "";
+  w.address = document.getElementById("hufal-address-input")?.value.trim() || "";
+  w.workType = document.getElementById("hufal-type-select")?.value || "";
+  w.team = document.getElementById("hufal-team-input")?.value.trim() || "";
+  w.techNotes = document.getElementById("hufal-technotes-input")?.value.trim() || "";
   state.hufalEditingWork = null;
+  state.selectedDate = w.date; state.viewAnchor = w.date;
   render();
-  showToast("Dados da obra guardados");
+  try { await updateWorkRow(w); showToast("Dados da obra guardados"); }
+  catch (e) { showToast(`Não sincronizou (${e.message || "erro"})`); }
 }
 
-function renderWorkCard(ev) {
-  const work = state.works[ev.gcalEventId] || {};
-  const editOpen = state.hufalEditingWork === ev.gcalEventId;
-  const d = new Date(ev.date + "T12:00:00");
+async function handleDeleteWork(id) {
+  const w = state.works.find(x => x.id === id);
+  if (!w) return;
+  try { await deleteWorkRow(w); } catch (e) { showToast(`Não sincronizou (${e.message || "erro"})`); }
+  render();
+}
+
+function renderWorkCard(w) {
+  const editOpen = state.hufalEditingWork === w.id;
+  const d = new Date(w.date + "T12:00:00");
   const dateLabel = `${PT_DAYS_SHORT[d.getDay()]}, ${d.getDate()} ${PT_MONTHS[d.getMonth()].slice(0,3)}`;
 
   if (editOpen) {
     return `
       <div class="task-card" style="border-left:3px solid var(--tab-hufal);margin-bottom:8px;">
-        <div class="task-main" style="padding-bottom:0;">
-          <div class="task-body">
-            <div class="task-title">${esc(ev.title)}</div>
-            <div class="task-meta">${dateLabel}${ev.startTime?' · '+esc(ev.startTime):''}</div>
-          </div>
-        </div>
-        <div class="task-obs-area" style="flex-direction:column;align-items:stretch;gap:8px;">
+        <div class="task-obs-area" style="flex-direction:column;align-items:stretch;gap:8px;border-top:none;">
+          <input class="form-input" id="hufal-edit-title" value="${esc(w.title)}" placeholder="Título da obra">
           <div class="form-grid" style="margin-bottom:0;">
-            <div class="form-field full"><label class="form-label">Cliente</label><input class="form-input" id="hufal-client-input" value="${esc(work.client||'')}" placeholder="Nome do cliente"></div>
-            <div class="form-field full"><label class="form-label">Morada</label><input class="form-input" id="hufal-address-input" value="${esc(work.address||'')}" placeholder="Morada da obra"></div>
+            <div class="form-field full"><label class="form-label">Data</label><input type="date" class="form-input" id="hufal-edit-date" value="${w.date}"></div>
+            <div class="form-field"><label class="form-label">Início</label><input type="time" class="form-input" id="hufal-edit-start" value="${w.startTime||''}"></div>
+            <div class="form-field"><label class="form-label">Fim</label><input type="time" class="form-input" id="hufal-edit-end" value="${w.endTime||''}"></div>
+            <div class="form-field full"><label class="form-label">Cliente</label><input class="form-input" id="hufal-client-input" value="${esc(w.client||'')}" placeholder="Nome do cliente"></div>
+            <div class="form-field full"><label class="form-label">Morada</label><input class="form-input" id="hufal-address-input" value="${esc(w.address||'')}" placeholder="Morada da obra"></div>
             <div class="form-field full"><label class="form-label">Tipo de trabalho</label>
               <select class="form-input" id="hufal-type-select">
                 <option value="">— Selecionar —</option>
-                ${WORK_TYPES.map(w => `<option value="${w}" ${w===work.workType?'selected':''}>${w}</option>`).join("")}
+                ${WORK_TYPES.map(t => `<option value="${t}" ${t===w.workType?'selected':''}>${t}</option>`).join("")}
               </select>
             </div>
-            <div class="form-field full"><label class="form-label">Equipa / Responsável</label><input class="form-input" id="hufal-team-input" value="${esc(work.team||'')}" placeholder="Ex: Hugo, equipa externa…"></div>
-            <div class="form-field full"><label class="form-label">Notas técnicas</label><input class="form-input" id="hufal-technotes-input" value="${esc(work.techNotes||'')}" placeholder="Medidas, materiais, observações…"></div>
+            <div class="form-field full"><label class="form-label">Equipa / Responsável</label><input class="form-input" id="hufal-team-input" value="${esc(w.team||'')}" placeholder="Ex: Hugo, equipa externa…"></div>
+            <div class="form-field full"><label class="form-label">Notas técnicas</label><input class="form-input" id="hufal-technotes-input" value="${esc(w.techNotes||'')}" placeholder="Medidas, materiais, observações…"></div>
           </div>
           <div style="display:flex;gap:7px;">
             <button class="modal-cancel" style="flex:1;" onclick="cancelHufalEdit()">Cancelar</button>
-            <button class="obs-save-btn" style="flex:1;background:var(--tab-hufal);" onclick="saveHufalWork('${ev.gcalEventId}')">Guardar</button>
+            <button class="obs-save-btn" style="flex:1;background:var(--tab-hufal);" onclick="saveHufalWork('${w.id}')">Guardar</button>
           </div>
         </div>
       </div>`;
   }
 
-  const hasWork = work.client || work.address || work.workType || work.team || work.techNotes;
+  const mapsUrl = w.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(w.address)}` : "";
   return `
     <div class="task-card" style="border-left:3px solid var(--tab-hufal);margin-bottom:8px;">
       <div class="task-main">
-        <div style="font-size:11px;font-weight:600;color:var(--tab-hufal);min-width:62px;">${dateLabel}${ev.startTime?'<br>'+esc(ev.startTime):''}</div>
-        <div class="task-body">
-          <div class="task-title">${esc(ev.title)}</div>
-          ${work.workType?`<div class="task-meta"><span style="color:var(--tab-hufal);font-weight:500;">🔧 ${esc(work.workType)}</span></div>`:""}
-          ${work.client?`<div class="task-meta">👤 ${esc(work.client)}</div>`:""}
-          ${work.address?`<div class="task-meta"><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(work.address)}" target="_blank" rel="noopener" style="color:#3b6fd4;text-decoration:none;" onclick="event.stopPropagation()">📍 ${esc(work.address)}</a></div>`:""}
-          ${work.team?`<div class="task-meta">🧑‍🔧 ${esc(work.team)}</div>`:""}
-          ${!hasWork?`<div class="task-meta" style="color:#c97d1a;">Sem dados de obra preenchidos</div>`:""}
+        <div style="font-size:11px;font-weight:600;color:var(--tab-hufal);min-width:62px;">${dateLabel}${w.startTime?'<br>'+esc(w.startTime):''}</div>
+        <div class="task-body" onclick="openHufalEdit('${w.id}')" style="cursor:pointer;">
+          <div class="task-title">${esc(w.title)}</div>
+          ${w.workType?`<div class="task-meta"><span style="color:var(--tab-hufal);font-weight:500;">🔧 ${esc(w.workType)}</span></div>`:""}
+          ${w.client?`<div class="task-meta">👤 ${esc(w.client)}</div>`:""}
+          ${w.address?`<div class="task-meta"><a href="${mapsUrl}" target="_blank" rel="noopener" style="color:#3b6fd4;text-decoration:none;" onclick="event.stopPropagation()">📍 ${esc(w.address)}</a></div>`:""}
+          ${w.team?`<div class="task-meta">🧑‍🔧 ${esc(w.team)}</div>`:""}
         </div>
-        <button class="icon-btn" onclick="openHufalEdit('${ev.gcalEventId}')" title="Editar dados da obra">✏️</button>
+        <div class="task-actions">
+          <button class="icon-btn" onclick="openHufalEdit('${w.id}')" title="Editar">✏️</button>
+          <button class="icon-btn danger" onclick="handleDeleteWork('${w.id}')">×</button>
+        </div>
       </div>
     </div>`;
 }
 
+function renderHufalAddSection() {
+  const chatHtml = state.hufalMessages.map(m => `
+    <div class="msg ${m.role}">
+      <div class="avatar ${m.role}" style="${m.role==='ai'?`background:color-mix(in srgb, var(--tab-hufal) 18%, white);color:var(--tab-hufal);`:`background:var(--tab-hufal);`}">${m.role==='ai'?'✦':'S'}</div>
+      <div class="msg-bubble">${esc(m.text)}</div>
+    </div>`).join("") + (state.hufalLoading ? `<div class="msg ai"><div class="avatar ai">✦</div><div class="msg-bubble"><div class="loading-dots"><span></span><span></span><span></span></div></div></div>` : "");
+
+  return `
+    <div class="add-section">
+      <div class="add-toggle-row">
+        <button class="toggle-btn ${state.hufalMode==='chat'?'active':''}" style="${state.hufalMode==='chat'?`background:var(--tab-hufal);border-color:var(--tab-hufal);`:''}" onclick="setHufalMode('chat')">💬 Ditar</button>
+        <button class="toggle-btn ${state.hufalMode==='form'?'active':''}" style="${state.hufalMode==='form'?`background:var(--tab-hufal);border-color:var(--tab-hufal);`:''}" onclick="setHufalMode('form')">✏️ Formulário</button>
+      </div>
+      ${state.hufalMode === 'chat' ? `
+        <div class="chat-area" id="hufal-chat-area">${chatHtml}</div>
+        <div class="input-area">
+          <div class="input-row">
+            <textarea class="text-input" id="hufal-chat-input" placeholder='Ex: "Instalação cliente Fundão sexta às 9h"' rows="1"></textarea>
+            <button class="send-btn" id="hufal-send-btn" style="background:var(--tab-hufal);" ${state.hufalLoading?'disabled':''}>➤</button>
+          </div>
+          <div class="gcal-status"><div class="dot"></div>Quadro HUFAL · guardado no Google Sheet, não sincroniza com o Google Calendar</div>
+        </div>
+      ` : `
+        <div class="manual-form">
+          <div class="form-grid">
+            <div class="form-field full"><label class="form-label">Título</label><input class="form-input" id="hufal-form-title" placeholder="Ex: Instalação janelas — Cliente Fundão"></div>
+            <div class="form-field"><label class="form-label">Data</label><input type="date" class="form-input" id="hufal-form-date" value="${state.selectedDate}"></div>
+            <div class="form-field"><label class="form-label">Tipo de trabalho</label>
+              <select class="form-input" id="hufal-form-type">
+                <option value="">— Selecionar —</option>
+                ${WORK_TYPES.map(t => `<option value="${t}">${t}</option>`).join("")}
+              </select>
+            </div>
+            <div class="form-field"><label class="form-label">Início</label><input type="time" class="form-input" id="hufal-form-start"></div>
+            <div class="form-field"><label class="form-label">Fim</label><input type="time" class="form-input" id="hufal-form-end"></div>
+            <div class="form-field full"><label class="form-label">Cliente</label><input class="form-input" id="hufal-form-client" placeholder="Nome do cliente"></div>
+            <div class="form-field full"><label class="form-label">Morada</label><input class="form-input" id="hufal-form-address" placeholder="Morada da obra"></div>
+            <div class="form-field full"><label class="form-label">Equipa / Responsável</label><input class="form-input" id="hufal-form-team" placeholder="Ex: Hugo, equipa externa…"></div>
+            <div class="form-field full"><label class="form-label">Notas técnicas</label><input class="form-input" id="hufal-form-technotes" placeholder="Medidas, materiais, observações…"></div>
+          </div>
+          <button class="add-btn" id="hufal-form-add-btn" style="background:var(--tab-hufal);">Adicionar ao quadro HUFAL</button>
+        </div>
+      `}
+    </div>
+  `;
+}
+
 function renderHufalTab() {
-  const workEvents = state.events.filter(isHufalWorkEvent);
-  const upcoming = workEvents.filter(e => e.date >= todayStr());
-  const past = workEvents.filter(e => e.date < todayStr());
+  const upcoming = state.works.filter(w => w.date >= todayStr());
+  const past = state.works.filter(w => w.date < todayStr());
 
   let body = "";
-  if (state.hufalCalView === "mensal") body = renderMonthly("hufal", workEvents);
-  else if (state.hufalCalView === "semanal") body = renderWeekly("hufal", workEvents);
-  else body = renderDaily("hufal", workEvents);
+  if (state.hufalCalView === "mensal") body = renderMonthly("hufal", state.works);
+  else if (state.hufalCalView === "semanal") body = renderWeekly("hufal", state.works);
+  else body = renderDaily("hufal", state.works);
 
   return `
     <div class="task-stats">
-      <div class="stat-box"><div class="stat-num" style="color:var(--tab-hufal);">${workEvents.length}</div><div class="stat-label">Total</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:var(--tab-hufal);">${state.works.length}</div><div class="stat-label">Total</div></div>
       <div class="stat-box"><div class="stat-num" style="color:#3b6fd4;">${upcoming.length}</div><div class="stat-label">Por vir</div></div>
-      <div class="stat-box"><div class="stat-num" style="color:var(--gray);">${past.length}</div><div class="stat-label">Concluídas</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:var(--gray);">${past.length}</div><div class="stat-label">Passadas</div></div>
     </div>
-    <div style="font-size:11.5px;color:var(--gray);margin-bottom:12px;">Mostra eventos da Agenda marcados como HUFAL ou com palavras como "instalação", "retificação", "medição", "assistência".</div>
-    ${workEvents.length === 0
-      ? `<div class="empty-state"><div style="font-size:26px;margin-bottom:6px;">🔧</div>Sem instalações ou obras agendadas.<br>Cria um evento na Agenda com categoria HUFAL.</div>`
-      : body + renderListForSelected("hufal", workEvents)
-    }
+    <div style="font-size:11.5px;color:var(--gray);margin-bottom:12px;">Quadro de planeamento HUFAL. É indicativo, fica guardado no teu Google Sheet e não sincroniza com o Google Calendar.</div>
+    ${body}
+    ${renderListForSelected("hufal", state.works)}
+    ${renderHufalAddSection()}
   `;
 }
 
@@ -1243,6 +1412,19 @@ function attachAgendaListeners() {
 
   const chatArea = document.getElementById("chat-area");
   if (chatArea) chatArea.scrollTop = chatArea.scrollHeight;
+
+  const hufalChatInput = document.getElementById("hufal-chat-input");
+  if (hufalChatInput) {
+    hufalChatInput.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleHufalSend(); } });
+  }
+  const hufalSend = document.getElementById("hufal-send-btn");
+  if (hufalSend) hufalSend.onclick = handleHufalSend;
+
+  const hufalFormAdd = document.getElementById("hufal-form-add-btn");
+  if (hufalFormAdd) hufalFormAdd.onclick = handleHufalFormAdd;
+
+  const hufalChatArea = document.getElementById("hufal-chat-area");
+  if (hufalChatArea) hufalChatArea.scrollTop = hufalChatArea.scrollHeight;
 }
 
 // ============================================================
