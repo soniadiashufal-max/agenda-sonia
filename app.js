@@ -3,6 +3,17 @@
 // Vanilla JS. Sem frameworks. Sem build step.
 // ============================================================
 
+// ============================================================
+// CONFIGURAÇÃO — editada directamente aqui, um único ficheiro
+// ============================================================
+const CONFIG = {
+  GOOGLE_CLIENT_ID: "161526450221-4hi5ucppv9773drvvu73jvkrr0th4rga.apps.googleusercontent.com",
+  GOOGLE_SHEET_ID: "17fz0b_fFU7GWtb4hPzXNTCdQM1qyeemwXqjyIlkObRg",
+  ANTHROPIC_API_KEY: "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",
+  GOOGLE_SCOPES: "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/spreadsheets",
+  TIMEZONE: "Europe/Lisbon",
+};
+
 const TEAL_HEX = { BNI: "#d4001a", HUFAL: "#035e5f", "Reunião": "#c97d1a", Pessoal: "#7c6daa", Outro: "#6b7280" };
 const TASK_TYPES = [
   { value: "Orçamento", icon: "📋", color: "#3b6fd4" },
@@ -283,7 +294,7 @@ async function loadTasksFromSheet() {
     })).reverse();
   } catch (e) {
     // Não apaga as tarefas já visíveis; só avisa que não conseguiu atualizar.
-    showToast(`Não foi possível carregar as tarefas do Sheet (${e.message || "erro"})`);
+    showToast(`Não foi possível carregar as tarefas do Sheet (${e.message || "erro"})`, 9000);
   }
 }
 
@@ -363,7 +374,7 @@ async function loadWorksFromSheet() {
       rowIndex: i + 2,
     }));
   } catch (e) {
-    showToast(`Não foi possível carregar o quadro HUFAL (${e.message || "erro"})`);
+    showToast(`Não foi possível carregar o quadro HUFAL (${e.message || "erro"})`, 9000);
   }
 }
 
