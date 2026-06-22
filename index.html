@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Agenda" />
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="config.js"></script>
+<script src="config.js?v=3"></script>
 <style>
 :root {
   --teal: #058B8C;
@@ -24,6 +24,9 @@
   --tab-agenda: #058B8C;   /* RAL 5018 base */
   --tab-tarefas: #2E8B6E;  /* variante mais verde, dentro da família */
   --tab-hufal: #035e5f;    /* RAL 5018 mais escuro */
+  --tab-agenda-tint: rgba(5, 139, 140, 0.07);
+  --tab-tarefas-tint: rgba(46, 139, 110, 0.07);
+  --tab-hufal-tint: rgba(3, 94, 95, 0.08);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; overscroll-behavior-y: none; }
@@ -57,7 +60,10 @@ body {
 #tab-hufal.active { color: var(--tab-hufal); border-bottom-color: var(--tab-hufal); }
 .tab-badge { background: #e57373; color: white; border-radius: 10px; font-size: 9.5px; padding: 1px 5px; font-weight: 600; }
 
-.main { flex: 1; padding: 14px 16px; overflow-y: auto; max-width: 720px; width: 100%; margin: 0 auto; padding-bottom: 40px; }
+.main { flex: 1; padding: 14px 16px; overflow-y: auto; max-width: 720px; width: 100%; margin: 0 auto; padding-bottom: 40px; transition: background-color .2s ease; }
+.main.tab-bg-agenda { background-color: rgba(5,139,140,0.07); }
+.main.tab-bg-tarefas { background-color: rgba(46,139,110,0.07); }
+.main.tab-bg-hufal { background-color: rgba(3,94,95,0.07); }
 
 .view-switch { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 10px; flex-wrap: wrap; }
 .view-pills { display: flex; border: 1px solid #d1d9d7; border-radius: 8px; overflow: hidden; }
@@ -231,7 +237,7 @@ body {
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 <script>
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
